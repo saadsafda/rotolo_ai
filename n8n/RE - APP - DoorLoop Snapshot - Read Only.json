@@ -1,0 +1,917 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7f53dd17-73d5-44d7-b48d-275c47a4f281",
+      "name": "Run DoorLoop API Collection",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/properties",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a8f55246-2080-4091-8568-839c486b5892",
+      "name": "DoorLoop API - Properties",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1744,
+        -320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "a0ffa332-bb0c-4645-b079-42c3c7bb350f",
+      "name": "Validate API - Properties",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/leases",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "383ad31b-bbee-43e1-a5a5-195daa98c25b",
+      "name": "DoorLoop API - Leases",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2352,
+        -320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "7464d7bb-ce13-4385-a1c1-1702989d5585",
+      "name": "Validate API - Leases",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/leases/tenants",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "b5e2804f-b6ae-47bc-9e9c-aeeb6f5c1d25",
+      "name": "DoorLoop API - Lease Tenants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1744,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.uniqueId??r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "1c6f074b-0efb-458d-846e-03f13fc8b0cb",
+      "name": "Validate API - Lease Tenants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/lease-charges",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fffb1f79-cbff-4205-ada0-b7f0c5dc29fc",
+      "name": "DoorLoop API - Charges",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2352,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "7d171319-acf1-4b8e-aa46-9d43e95c64c0",
+      "name": "Validate API - Charges",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/lease-payments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "47f4e8e3-9f04-4361-9a80-e5c9f2332a93",
+      "name": "DoorLoop API - Payments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1744,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "e08f48da-53e0-46fe-baf8-c04dd50bdcff",
+      "name": "Validate API - Payments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/lease-credits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "aa94ef2f-94ae-4a3d-8d5b-93c20a099f68",
+      "name": "DoorLoop API - Credits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2352,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "3808ae7c-c94e-44af-8fec-2b77d28cda68",
+      "name": "Validate API - Credits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/lease-reversed-payments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "e82f4991-4770-40ff-a887-3b70f4a26427",
+      "name": "DoorLoop API - Returned Payments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1744,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "0f638dac-66b1-4c5d-9bd9-86cbb77e3712",
+      "name": "Validate API - Returned Payments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://app.doorloop.com/api/tasks",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "page_size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_number",
+                    "value": "={{ $pageCount + 1 }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body.data) || !Number.isInteger($response.body.total) || $response.body.data.length < 100 }}",
+              "limitPagesFetched": true,
+              "requestInterval": 500
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "1efb7360-894d-4eac-840d-f065892b5b48",
+      "name": "DoorLoop API - Tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2352,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "sIJvxFhFDKe1mA5C",
+          "name": "Bearer Auth account"
+        }
+      },
+      "notes": "Select DoorLoop - Client Bearer Auth credential. API collection draft; not yet live-tested."
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages=$input.all().map(i=>i.json);if(!pages.length)throw Error('Empty API response');let total;const records=[];for(const p of pages){if(!p||!Array.isArray(p.data)||!Number.isSafeInteger(p.total)||p.total<0)throw Error('Expected DoorLoop {total,data} list response');if(total!==undefined&&total!==p.total)throw Error('Source changed during pagination. Retry snapshot');total=p.total;records.push(...p.data);}if(records.length!==total)throw Error('Incomplete pagination: '+records.length+' of '+total);const ids=records.map(r=>r.id??r._id);if(ids.some(id=>id===undefined||id===null)||new Set(ids.map(String)).size!==records.length)throw Error('Missing or duplicate record IDs: verify source schema/pagination');return [{json:{total,complete:true,pages:pages.length,collectedAt:new Date().toISOString(),records}}];"
+      },
+      "id": "2dd79a79-f4d4-4f2e-87aa-c737b509941d",
+      "name": "Validate API - Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const names=['Properties','Leases','Lease Tenants','Charges','Payments','Credits','Returned Payments','Tasks'];const data={},sourceCounts={},paginationChecks={};for(const s of names){const d=$('Validate API - '+s).first().json;if(!d.complete||!Array.isArray(d.records)||d.records.length!==d.total)throw Error('Incomplete source: '+s);data[s]=d.records;sourceCounts[s]=d.total;paginationChecks[s]={pages:d.pages,complete:true,collectedAt:d.collectedAt};}\nconst today=$now.setZone('America/New_York').toISODate();const month=today.slice(0,7);const props=new Map(data.Properties.map(p=>[p.id,p.name]));const leases=new Map(data.Leases.map(l=>[l.id,l]));const money=v=>typeof v==='number'&&Number.isFinite(v)?v:null;const usd=v=>money(v)===null?'unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(v);const clean=v=>String(v??'Not recorded').replace(/[\\r\\n|]/g,' ').slice(0,240);const label=id=>{const l=leases.get(id);return l?clean(props.get(l.property)||l.property)+' / '+clean(l.name)+' [lease '+l.reference+']':'Unknown lease '+id;};\nconst balanceRows=data.Leases.map(l=>({leaseId:l.id,reference:l.reference,property:props.get(l.property)||l.property,leaseName:l.name,status:l.status,calculatedStatus:l.calculatedStatus,collectionStatus:l.calculatedCollectionStatus,totalBalanceDue:money(l.totalBalanceDue),overdueBalance:money(l.overdueBalance),currentBalance:money(l.currentBalance),upcomingBalance:money(l.upcomingBalance)}));\nconst overdue=balanceRows.filter(l=>l.overdueBalance!==null&&l.overdueBalance>0).sort((a,b)=>b.overdueBalance-a.overdueBalance);const activeOverdue=overdue.filter(l=>l.status==='ACTIVE');const otherOverdue=overdue.filter(l=>l.status!=='ACTIVE');const missingBalances=balanceRows.filter(l=>l.overdueBalance===null).length;\nconst reversedIds=new Set(data['Returned Payments'].map(r=>r.leasePayment));const monthlyPayments=data.Payments.filter(p=>String(p.date).slice(0,7)===month&&p.date<=today);const paymentRows=monthlyPayments.map(p=>({id:p.id,date:p.date,leaseId:p.lease,amountReceived:money(p.amountReceived),depositStatus:p.depositStatus||'UNAVAILABLE',returnedPaymentLinked:reversedIds.has(p.id)})).sort((a,b)=>b.date.localeCompare(a.date));const depositCounts={};for(const p of paymentRows)depositCounts[p.depositStatus]=(depositCounts[p.depositStatus]||0)+1;\nconst taskStatuses={};for(const t of data.Tasks)taskStatuses[t.status||'UNAVAILABLE']=(taskStatuses[t.status||'UNAVAILABLE']||0)+1;const closed=new Set(['COMPLETED','COMPLETE','CLOSED','CANCELLED','CANCELED','DELETED']);const openTasks=data.Tasks.filter(t=>!closed.has(t.status));const datedOverdue=openTasks.filter(t=>/^\\d{4}-\\d{2}-\\d{2}/.test(t.dueDate||'')&&t.dueDate.slice(0,10)<today);const taskRows=openTasks.filter(t=>!/rent payment reminder/i.test(t.subject||'')).sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||''))).map(t=>({id:t.id,subject:clean(t.subject),type:t.type,status:t.status,dueDate:t.dueDate||null,property:props.get(t.property)||t.property||'Not recorded',lastUpdated:t.updatedAt}));\nconst lines=['# DoorLoop rent and task snapshot',today+' | America/New_York | read-only live API','Complete source counts: '+Object.entries(sourceCounts).map(([k,v])=>k+' '+v).join('; '),'','## API-calculated overdue balances','These are DoorLoop lease.overdueBalance fields, not a reconstructed ledger. Amounts are account currency formatted as USD; verify the account currency and ledger before outreach.','Active leases with positive overdue balances: '+activeOverdue.length+'; other/inactive leases: '+otherOverdue.length+'; missing balance fields: '+missingBalances+'.','Collection-status conflicts requiring review: '+overdue.filter(l=>l.collectionStatus!=='OVERDUE').map(l=>label(l.leaseId)+' status '+l.collectionStatus+' but overdue '+usd(l.overdueBalance)).join('; '),'Active overdue total: '+usd(activeOverdue.reduce((s,l)=>s+l.overdueBalance,0))+'; other/inactive overdue total: '+usd(otherOverdue.reduce((s,l)=>s+l.overdueBalance,0)),...overdue.slice(0,50).map(l=>'- '+label(l.leaseId)+' | '+l.status+'/'+l.calculatedStatus+' | collection '+l.collectionStatus+' | overdue '+usd(l.overdueBalance)+' | total due '+usd(l.totalBalanceDue)),'','## Payment records this month through '+today,'Records: '+paymentRows.length+'; raw deposit statuses: '+JSON.stringify(depositCounts)+'. A payment record or DEPOSITED status alone does not establish bank settlement. Returned-payment references are flagged.',...paymentRows.slice(0,50).map(p=>'- '+p.date+' | '+label(p.leaseId)+' | amountReceived '+usd(p.amountReceived)+' | '+p.depositStatus+' | linked return '+p.returnedPaymentLinked),'Showing '+Math.min(paymentRows.length,50)+' of '+paymentRows.length+' payment records.','', '## Open task review','All task statuses: '+JSON.stringify(taskStatuses), 'Non-terminal tasks: '+openTasks.length+'; dated before today: '+datedOverdue.length+'. Historical/stale records require review; these are task due dates, not confirmed contractor appointments.',...taskRows.slice(0,50).map(t=>'- '+t.subject+' | '+clean(t.property)+' | '+t.type+'/'+t.status+' | due '+(t.dueDate||'Not recorded')+' | last updated '+t.lastUpdated),'Showing '+Math.min(taskRows.length,50)+' of '+taskRows.length+' non-reminder open tasks, most recently updated first. Historical rent-reminder tasks excluded from the detail list: '+openTasks.filter(t=>/rent payment reminder/i.test(t.subject||'')).length+'.','','## Follow-up controls','Tenant reminders remain disabled. No confirmed promise-to-pay dates or contractor appointments have been extracted. Owner must verify lease status, current ledger, pending/returned payments and communications before contacting a tenant. No legal notices or account writes.'];\nreturn [{json:{status:'READ_ONLY_BALANCE_AND_TASK_REVIEW',collectedAt:new Date().toISOString(),reportDate:today,sourceCounts,paginationChecks,balanceRows,overdueCount:overdue.length,paymentRows,taskStatuses,openTaskCount:openTasks.length,overdueTaskCount:datedOverdue.length,externalActionsExecuted:false,appTaskRows:(()=>{const recent=$now.minus({days:14}).toISO();return data.Tasks.filter(t=>!/rent payment reminder/i.test(t.subject||'')&&(!closed.has(t.status)||(['COMPLETED','COMPLETE'].includes(t.status)&&String(t.updatedAt||'')>=recent))).map(t=>({id:t.id,subject:clean(t.subject),type:t.type||null,status:t.status||null,priority:t.priority??null,dueDate:t.dueDate||null,property:props.get(t.property)||t.property||null,updatedAt:t.updatedAt||null}));})(),appReminderTaskCount:openTasks.filter(t=>/rent payment reminder/i.test(t.subject||'')).length,appLeasePropertyIds:Object.fromEntries(data.Leases.map(l=>[l.id,l.property])),remindersAllowed:false,report:lines.join('\\n')}}];"
+      },
+      "id": "96eeb33b-4abb-48b9-8739-b2bdca72cd85",
+      "name": "DoorLoop API Snapshot - Mapping Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "content": "# DoorLoop connection audit\nBearer Auth account is selected in all eight HTTP nodes. Pagination configuration corrected during audit. Live run pending.\n\nOpenAI - Harry passed n8n credential test. AI generation/model billing not yet tested. Gmail remains pending.\n\nKeep unpublished until source schema, balances, pending payments and contractor dates are validated. No tenant sends or account writes. The collector ends at mapping review; it is not a finished rent report.\n\nDocs: https://api.doorloop.com/reference/authentication",
+        "height": 600,
+        "width": 750
+      },
+      "id": "1c5d9a97-ea16-43d6-ba97-05035948fa4a",
+      "name": "API Access Update - 11 November",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2752,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "a288236a-62b4-4d0c-9891-e2dcd552d8ee",
+      "name": "Daily Report - Subworkflow Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        528,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## RE - APP copy of 03 (read only)\nIdentical to \"RE - DoorLoop API Snapshot - Read Only\" except the last node also returns `appTaskRows` (open tasks plus tasks completed in the last 14 days, with real task IDs), `appReminderTaskCount` and `appLeasePropertyIds` for the Rotolo app. GET requests only.",
+        "height": 220,
+        "width": 420
+      },
+      "name": "APP Copy Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -320
+      ],
+      "id": "app-copy-note"
+    }
+  ],
+  "connections": {
+    "Run DoorLoop API Collection": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Properties": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Properties": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Leases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Leases": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Leases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Leases": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Lease Tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Lease Tenants": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Lease Tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Lease Tenants": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Charges",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Charges": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Charges",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Charges": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Payments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Payments": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Payments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Payments": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Credits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Credits": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Credits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Credits": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Returned Payments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Returned Payments": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Returned Payments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Returned Payments": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DoorLoop API - Tasks": {
+      "main": [
+        [
+          {
+            "node": "Validate API - Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API - Tasks": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API Snapshot - Mapping Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Report - Subworkflow Input": {
+      "main": [
+        [
+          {
+            "node": "DoorLoop API - Properties",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "name": "RE - APP - DoorLoop Snapshot - Read Only",
+  "active": false
+}

@@ -1,0 +1,540 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4c8b573f-7d55-4958-900a-6f3d126dbc98",
+      "name": "Run Time Doctor Read Only Report",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        304,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":1}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "1aa04a50-639a-4a5f-be53-216c5b3a8480",
+      "name": "Time Doctor MCP - Discover Tools",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        816,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"td_whoami\",\"arguments\":{}},\"id\":500}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "15ff17eb-bb76-47f7-a35b-9251ebc04eaa",
+      "name": "Time Doctor MCP - Verify Company",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1056,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"td_list_users\",\"arguments\":{\"detail\":\"info\",\"limit\":100,\"fields\":[\"id\",\"name\",\"timezone\",\"role\"]}},\"id\":750}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "dff5767b-fa33-42ee-9a0a-cd9e50c2a8b2",
+      "name": "Time Doctor MCP - Read User Directory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1568,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{reportDate:$now.setZone('America/New_York').minus({days:1}).toISODate(),timezone:'America/New_York',scope:'Lhaura Somera and Mary Dalipe only',targetUserIds:['atZbYo2u_1G5a1ed','Y5iTR_CAIiS6OG4x'],validationRun:false}}];"
+      },
+      "id": "60b163db-e3e2-4113-9516-43da4805c199",
+      "name": "Time Doctor - Report Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rpc=JSON.parse($input.first().json.mcpRaw);if(rpc.error||rpc.result?.isError)throw Error(JSON.stringify(rpc.error||rpc.result));const res=rpc.result.structuredContent||JSON.parse(rpc.result.content.find(c=>c.type==='text').text);const c=res.data;if(c.companyId!=='Y45ERHZWGqYEslJF'||c.company?.name!==\"Harry Rotolo's Company\")throw Error('Unexpected Time Doctor company');if(c.readOnly!==true)throw Error('Expected read-only MCP connection');return [{json:{companyId:c.companyId,companyName:c.company.name,role:c.role,plan:c.company.plan,timezone:c.company.timezone,readOnly:c.readOnly}}];"
+      },
+      "id": "6386d17e-17e1-4e0f-bf00-50d881eccd4d",
+      "name": "Time Doctor - Validate Workspace",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Time Doctor - Build Daily Requests').first().json.summaryByUser) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "c8dc4363-ef29-43f4-b907-237fd6e53804",
+      "name": "Time Doctor MCP - User Daily Totals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2064,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Time Doctor - Build Daily Requests').first().json.teamSummary) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "56e3adc0-7aab-48fa-b90d-ea0c96b1492f",
+      "name": "Time Doctor MCP - Team Daily Total",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2304,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Time Doctor - Build Daily Requests').first().json.timeline) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "de0c822d-d8c8-4fea-810d-7c4918ab0f70",
+      "name": "Time Doctor MCP - Daily Timeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Time Doctor - Build Daily Requests').first().json.plannedShifts) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "ebd35a01-144b-4dc7-bc5b-e1ca15fb7f7f",
+      "name": "Time Doctor MCP - Planned Shifts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2816,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n\nconst rpc=JSON.parse($input.first().json.mcpRaw);\nif(rpc.error||rpc.result?.isError)throw Error('Directory call failed');\nconst users=rpc.result.structuredContent||JSON.parse(rpc.result.content.find(c=>c.type==='text').text);\nif(users.status!=='ok'||users.truncated||users.nextCursor||users.cursor)throw Error('Incomplete user directory');\nconst cfg=$('Time Doctor - Report Parameters').first().json;\nif(!/^\\d{4}-\\d{2}-\\d{2}$/.test(cfg.reportDate))throw Error('Use YYYY-MM-DD');\nconst intended = [\n  {id: cfg.targetUserIds[0], name: 'Lhaura Somera'},\n  {id: cfg.targetUserIds[1], name: 'Mary Dalipe'},\n];\nconst chosen = intended.flatMap(target => users.data.filter(user =>\n  user.id === target.id && user.name === target.name &&\n  user.archived !== true && user.isArchived !== true &&\n  user.active !== false && user.isActive !== false &&\n  !['archived', 'inactive', 'deleted'].includes(String(user.status || '').toLowerCase())\n));\nif (!chosen.length || new Set(chosen.map(user => user.id)).size !== chosen.length) {\n  throw Error('No validated active Time Doctor users remain in the configured scope.');\n}\nconst missing = intended.filter(target => !chosen.some(user => user.id === target.id));\nconst ids=chosen.map(u=>u.id).join(',');\nconst args={from:cfg.reportDate,to:cfg.reportDate,timezone:cfg.timezone,limit:500,user:ids};\nconst rpcFor=(name,a)=>({jsonrpc:'2.0',method:'tools/call',params:{name,arguments:a},id:1});\nreturn [{json:{summaryByUser:rpcFor('td_get_time_summary',Object.assign({},args,{groupBy:'user'})),teamSummary:rpcFor('td_get_time_summary',args),timeline:rpcFor('td_get_worklog',Object.assign({},args,{user:ids,detail:'full'})),plannedShifts:rpcFor('td_list_work_schedules',Object.assign({},args,{user:ids})),userIds:chosen.map(u=>u.id), intended, missing}}];\n\n"
+      },
+      "id": "6ecd3beb-ca94-49fc-850e-ad4f67595a3b",
+      "name": "Time Doctor - Build Daily Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1808,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst cfg=$('Time Doctor - Report Parameters').first().json;\nfunction unpack(name, allowNoData = false) {\n  const input = $(name).first().json;\n  let rpc;\n  try {\n    rpc = JSON.parse(input.mcpRaw);\n  } catch {\n    const events = String(input.mcpRaw).split('\\n').filter(line => line.startsWith('data:'));\n    rpc = JSON.parse(events.at(-1).slice(5).trim());\n  }\n  if (rpc.error || !rpc.result || rpc.result.isError) throw Error(name + ': Time Doctor request failed');\n  const response = rpc.result;\n  const data = response.structuredContent ?? JSON.parse(response.content.find(c => c.type === 'text').text);\n  if (data.truncated || data.nextCursor || data.next_cursor || data.cursor) {\n    throw Error(name + ': result is paged or truncated');\n  }\n  const noData = allowNoData && data.status === 'no_data_in_range';\n  if (data.status !== 'ok' && !noData) throw Error(name + ': unexpected status ' + data.status);\n  if (data.timezoneUsed && data.timezoneUsed !== cfg.timezone) throw Error(name + ': timezone mismatch');\n  if (!Array.isArray(data.data) || (data.totalCount !== undefined && data.totalCount !== data.data.length) ||\n      (noData && data.data.length !== 0)) throw Error(name + ': inconsistent rows');\n  return data;\n}\nconst users = unpack('Time Doctor MCP - Read User Directory');\nconst per = unpack('Time Doctor MCP - User Daily Totals', true);\nconst overall = unpack('Time Doctor MCP - Team Daily Total', true);\nconst timeline = unpack('Time Doctor MCP - Daily Timeline', true);\nconst shifts = unpack('Time Doctor MCP - Planned Shifts', true);\nconst who=$('Time Doctor - Validate Workspace').first().json;\nconst scope=$('Time Doctor - Build Daily Requests').first().json;\nconst selected=new Set(scope.userIds);\nconst toolsRpc=JSON.parse($('Time Doctor MCP - Discover Tools').first().json.mcpRaw);if(toolsRpc.error||!Array.isArray(toolsRpc.result?.tools))throw Error('Tool discovery failed');const tools=toolsRpc.result.tools;\nconst metrics = ['trackedSec', 'activeSec', 'idleSec', 'totalSec', 'meetingSec', 'productiveSec', 'unproductiveSec', 'neutralSec', 'unratedSec', 'idleMins'];\nconst emptyTeam = overall.status === 'no_data_in_range';\nif (emptyTeam && (per.data.length || timeline.data.length)) throw Error('Time Doctor returned activity alongside an empty team total');\nif (!emptyTeam && overall.data.length !== 1) throw Error('Expected one team total');\nconst total = emptyTeam\n  ? {...Object.fromEntries(metrics.map(metric => [metric, 0])), trackedHms: '0:00:00', activeHms: '0:00:00', idleHms: '0:00:00', meetingHms: '0:00:00'}\n  : overall.data[0];\nfor (const metric of metrics) {\n  const sum = per.data.reduce((value, user) => value + Number(user[metric] || 0), 0);\n  if (sum !== Number(total[metric] || 0)) throw Error('User/team reconciliation failed for ' + metric);\n}\nconst noActivity = per.data.length === 0 && timeline.data.length === 0 &&\n  (emptyTeam || total.trackedSec === 0);\nconst seenIds=new Set();for(const u of per.data){if(seenIds.has(u.userId)||!selected.has(u.userId))throw Error('Unresolved/duplicate user');seenIds.add(u.userId);for(const m of metrics)if(!Number.isFinite(u[m])||u[m]<0)throw Error('Invalid '+m);if(u.activeSec!==u.totalSec-u.idleSec)throw Error('Activity identity mismatch');const modeTotal=['computerSec','offcomputerSec','mobileSec','manualSec','paidBreakSec','paidLeaveSec'].reduce((a,k)=>a+Number(u[k]||0),0);if(modeTotal!==u.trackedSec)throw Error('Tracked mode split mismatch');}\nconst nameMap=new Map();for(const u of users.data){if(!nameMap.has(u.name))nameMap.set(u.name,[]);nameMap.get(u.name).push(u.id);}\nconst spans=new Map();for(const w of timeline.data){const matches=nameMap.get(w.userName)||[];const id=w.userId||(matches.length===1?matches[0]:null);if(!id || !selected.has(id))throw Error('Unresolved or out-of-scope timeline user');const a=Date.parse(w.start),b=Date.parse(w.end);if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)throw Error('Invalid timeline boundaries');if(!spans.has(id))spans.set(id,[]);spans.get(id).push({start:a,end:b,mode:w.mode,startRaw:w.start,endRaw:w.end});}\nconst timeLocal=v=>new Intl.DateTimeFormat('en-GB',{timeZone:cfg.timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(v));\nconst gaps=[];for(const [id,ss] of spans){const sorted=ss.sort((a,b)=>a.start-b.start),merged=[];for(const s of sorted){const last=merged[merged.length-1];if(last&&s.start<=last.end)last.end=Math.max(last.end,s.end);else merged.push({start:s.start,end:s.end});}for(let i=1;i<merged.length;i++){const before=merged[i-1],after=merged[i],seconds=(after.start-before.end)/1000;if(seconds>=300)gaps.push({userId:id,userName:users.data.find(u=>u.id===id).name,type:'between_recorded_blocks',start:new Date(before.end).toISOString(),end:new Date(after.start).toISOString(),startLocal:timeLocal(before.end),endLocal:timeLocal(after.start),approxMinutes:seconds/60,boundaryPrecision:'MCP start/end values are minute-resolution; gap duration is approximate',requiresReview:true,interpretation:'Untracked interval. May be a break or offline work; no non-work conclusion.'});}}\nconst webBaseline={date:'2026-11-04',timezone:'America/New_York',source:'Time Doctor Activity Summary, inspected in browser during setup',users:[{id:'atZbYo2u_1G5a1ed',trackedDisplayMinutes:483,meetingDisplayMinutes:79,idleMinutesDisplayPercent:0},{id:'Y5iTR_CAIiS6OG4x',trackedDisplayMinutes:480,meetingDisplayMinutes:10,idleMinutesDisplayPercent:27}]};\nlet uiValidation={status:'not_checked_for_this_date',baselineDate:webBaseline.date};if(scope.missing.length===0&&cfg.reportDate===webBaseline.date&&cfg.timezone===webBaseline.timezone){const checks=webBaseline.users.map(b=>{const u=per.data.find(u=>u.userId===b.id);if(!u)throw Error('Web baseline user missing');return {userId:b.id,trackedMinutesMatch:Math.floor(u.trackedSec/60)===b.trackedDisplayMinutes,meetingMinutesMatch:Math.floor(u.meetingSec/60)===b.meetingDisplayMinutes,idleMinutesPercentMatch:Math.round(parseFloat(u.idlePct))===b.idleMinutesDisplayPercent};});if(checks.some(c=>!c.trackedMinutesMatch||!c.meetingMinutesMatch||!c.idleMinutesPercentMatch))throw Error('Web comparison mismatch; review source');uiValidation={status:'matched_setup_web_snapshot',date:webBaseline.date,timezone:webBaseline.timezone,checks,limitation:'Baseline is the web page observed during setup; future runs reconcile API totals but do not automatically re-read the web UI.'};}\nconst warnings=[\n  ...scope.missing.map(user => user.name + ' is missing from the active configured directory scope.'),\n  ...scope.intended.filter(user => !noActivity && selected.has(user.id) && !seenIds.has(user.id))\n    .map(user => user.name + ' has no returned activity totals for this date.'),\n  per.timezoneWarning,overall.timezoneWarning,timeline.timezoneWarning,shifts.timezoneWarning].filter(Boolean);\nconst rows=per.data.map(u=>({userId:u.userId,name:u.userName,tracked:u.trackedHms,trackedSec:u.trackedSec,nonIdleComputer:u.activeHms,nonIdleComputerSec:u.activeSec,idleSecondsTotal:u.idleHms,idleSec:u.idleSec,wholeIdleMinutes:u.idleMins,wholeIdleMinutePercent:u.idlePct,idleSecondsPercent:u.idleSecPct,meeting:u.meetingHms,meetingSec:u.meetingSec,unproductiveWebsiteAppPercent:u.unproductivePct,manual:u.manualHms,mobile:u.mobileHms}));\nif (noActivity) {\n  for (const user of scope.intended.filter(user => selected.has(user.id))) {\n    rows.push({userId: user.id, name: user.name, tracked: '0:00:00', trackedSec: 0});\n  }\n}\nconst report=['# Time Doctor - Validated Daily Activity',cfg.reportDate+' | '+cfg.timezone+' | '+who.companyName,'Live read-only MCP connection. '+tools.length+' available tools.','','## Validation','User totals equal the separate team total for tracked, active, idle, meetings and productivity metrics.','Web comparison: '+uiValidation.status+'.','','## Selected VA total','Tracked: '+total.trackedHms+' | Non-idle computer: '+total.activeHms+' | Meeting: '+total.meetingHms,'Whole idle minutes: '+total.idleMins+' | All idle seconds expressed as duration: '+total.idleHms,'Whole idle minutes and idle seconds use different measures and must not be substituted for each other.','','## Per user','| User | Tracked | Non-idle computer | Whole idle minutes | Idle-minute % | Meetings |','|---|---|---|---|---|---|',...rows.map(u=>'| '+[u.name,u.tracked,u.nonIdleComputer,u.wholeIdleMinutes,u.wholeIdleMinutePercent,u.meeting].join(' | ')+' |'),'','## Timeline gaps of at least 5 minutes',...(gaps.length?gaps.map(g=>'- '+g.userName+': approximately '+g.approxMinutes+' minutes, '+g.startLocal+'–'+g.endLocal+' '+cfg.timezone+'. Review only; a break or offline work may explain it.'):['No between-block gaps of at least 5 minutes in the returned timeline.']),'','Planned shifts returned: '+shifts.data.length+'. No start-of-shift/end-of-shift absence conclusions are made.','Continuous five-minute idle events: unavailable from these aggregate/time-block results. Aggregate idle does not establish a continuous idle interval.','Users without entries: '+(per.coverage?.usersWithNoEntries??'not supplied')+'; no entries is not a non-work finding.','Scope: Lhaura Somera and Mary Dalipe only. No screenshots, payroll or employment actions were used.',...warnings].join('\\n');\nreturn [{json:{reportTitle:'Time Doctor Validated Daily Activity',source:'LIVE Time Doctor MCP',company:who.companyName,companyId:who.companyId,readOnly:true,reportDate:cfg.reportDate,timezoneUsed:per.timezoneUsed || overall.timezoneUsed || cfg.timezone,activityStatus:noActivity ? 'no_activity' : 'recorded',generatedAt:new Date().toISOString(),availableToolCount:tools.length,availableTools:tools.map(t=>({name:t.name,readOnly:t.annotations?.readOnlyHint===true})),validation:{apiUserTeamTotalsReconcile:true,metricsCompared:metrics,web:uiValidation},coverage:per.coverage,intendedUsers:scope.intended,missingUsers:scope.missing,\ndirectoryUsers:users.data.filter(u=>selected.has(u.id)).map(u=>({id:u.id,name:u.name,timezone:u.timezone||who.timezone})),teamTotal:{tracked:total.trackedHms,trackedSec:total.trackedSec,activeSec:total.activeSec,idleSec:total.idleSec,meetingSec:total.meetingSec,nonIdleComputer:total.activeHms,meeting:total.meetingHms,wholeIdleMinutes:total.idleMins,idleSecondsDuration:total.idleHms},rows,timelineRows:timeline.data,betweenBlockGaps:gaps,plannedShiftCount:shifts.data.length,continuousIdleEventDetection:{available:false,reason:'MCP returned aggregate idle and work blocks, not continuous idle-event boundaries'},timezoneWarnings:warnings,report}}];\n"
+      },
+      "id": "40a43929-54f7-46e8-89b2-bea8dd65e4e0",
+      "name": "Time Doctor - Validated Daily Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3056,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Mobile Time Doctor snapshot\nRead-only report for the two previously configured staff identities. If a user is missing, collect metrics only for the remaining validated scope and record the coverage gap. Directory, company, pagination and amount checks still apply.",
+        "height": 430,
+        "width": 780,
+        "color": 4
+      },
+      "id": "d6b2cfcc-3519-4211-bec4-267553d6cf2a",
+      "name": "Time Doctor - Report Scope",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        560,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "fbbc840e-a358-4d2f-9e9f-7489ef28a128",
+      "name": "Daily Report - Subworkflow Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        1952,
+        192
+      ]
+    }
+  ],
+  "connections": {
+    "Run Time Doctor Read Only Report": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Report Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor - Report Parameters": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Discover Tools",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Discover Tools": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Verify Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Verify Company": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Validate Workspace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor - Validate Workspace": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Read User Directory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Read User Directory": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Build Daily Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - User Daily Totals": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Team Daily Total",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Team Daily Total": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Daily Timeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Daily Timeline": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Planned Shifts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor - Build Daily Requests": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - User Daily Totals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Planned Shifts": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Validated Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Report - Subworkflow Input": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Report Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "name": "RE - APP - Time Doctor Snapshot - Read Only",
+  "active": false
+}
