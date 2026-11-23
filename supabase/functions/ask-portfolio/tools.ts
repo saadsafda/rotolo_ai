@@ -47,7 +47,6 @@ const matches = (hay: unknown[], query: string) => {
   const text = " " + norm(hay.join(" ")) + " ";
   return words.length > 0 && words.every((w) => text.includes(" " + w) || text.includes(w + " "));
 };
-const monthName = (day: string) => new Date(day + "T12:00:00Z").toLocaleString("en-US", { month: "short", timeZone: "UTC" });
 const daysBetween = (a: string, b: string) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000);
 
 function section(ctx: Ctx, key: string): Section | null {
@@ -83,15 +82,21 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
   if (!rent) return unavailable("DoorLoop rent");
   const all: Lease[] = rent.payload?.leases ?? [];
   const scope = args.property ? all.filter((l) => matches([l.property_name], args.property!)) : all;
+  if (args.property && !scope.length) {
+    return unavailable("No leases matching the property");
+  }
   const late = scope.filter((l) => (l.api_balance?.overdue_minor ?? 0) > 0)
     .sort((a, b) => (b.api_balance.overdue_minor ?? 0) - (a.api_balance.overdue_minor ?? 0));
   const missing = scope.filter((l) => l.api_balance?.overdue_minor == null).length;
+  if (scope.length > 0 && missing === scope.length) {
+    return unavailable("Overdue balances for these leases");
+  }
   const total = late.reduce((s, l) => s + (l.api_balance.overdue_minor ?? 0), 0);
   const top = late.slice(0, 6);
   const max = top.length ? top[0].api_balance.overdue_minor! : 0;
   const amounts = [money(total), ...late.map((l) => money(l.api_balance.overdue_minor!)), ...top.map((l) => compact(l.api_balance.overdue_minor!))];
   const blocks: Block[] = [
-    { type: "metric", label: "Overdue rent · " + monthName(ctx.today), value: money(total),
+    { type: "metric", label: missing ? "Known overdue rent" : "Overdue rent snapshot", value: money(total),
       caption: `Across ${late.length} of ${scope.length} leases · DoorLoop balance fields${missing ? ` · ${missing} not returned` : ""}` },
   ];
   if (top.length > 1) {
@@ -116,11 +121,22 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
   };
 }
 
+function ambiguousLease(matches: Lease[]): ToolResult {
+  return {
+    data: { matches: matches.length, reason: "Multiple leases match. Ask for the lease reference or exact property and unit." },
+    blocks: [{ type: "list", title: "Multiple leases match", items: matches.slice(0, 8).map((lease) => ({
+      title: leaseLabel(lease), subtitle: lease.reference ?? undefined, route: "/payments/balance/" + lease.lease_id,
+    })) }],
+    sources: [], amounts: [], suggestions: [],
+  };
+}
+
 function leaseDetails(ctx: Ctx, args: { query: string }): ToolResult {
   const rent = section(ctx, "doorloop_rent");
   if (!rent) return unavailable("DoorLoop rent");
   const found = findLeases(ctx, args.query ?? "");
   if (!found.length) return { data: { matches: 0, query: args.query }, blocks: [], sources: [], amounts: [], suggestions: ["Who is behind on rent?"] };
+  if (found.length > 1) return ambiguousLease(found);
   const l = found[0];
   const pays: any[] = (rent.payload?.payments ?? []).filter((p: any) => p.lease_id === l.lease_id);
   const outside = ctx.payments.filter((p) => String(p.lease_id).toLowerCase() === l.lease_id.toLowerCase());
@@ -143,7 +159,7 @@ function leaseDetails(ctx: Ctx, args: { query: string }): ToolResult {
       overdue: b.overdue_minor == null ? null : money(b.overdue_minor),
       payments_this_month: pays.map((p) => ({ date: p.date, amount: p.amount_minor == null ? null : money(p.amount_minor), returned: !!p.returned_linked })),
       outside_requests: outside.map((p) => ({ amount: money(p.amount_minor), status: p.status, date: p.payment_date })),
-      history_scope: "DoorLoop payments in the report cover the current month only.", other_matches: found.slice(1, 4).map(leaseLabel) },
+      history_scope: "DoorLoop payments in the report cover the current month only." },
     blocks, amounts,
     sources: [{ kind: "lease", title: "Lease — " + leaseLabel(l), subtitle: tenantName(l) + " · DoorLoop", route: "/payments/balance/" + l.lease_id }],
     suggestions: (b.overdue_minor ?? 0) > 0 ? [`Draft a reminder to ${tenantName(l)}`] : [],
@@ -153,11 +169,14 @@ function leaseDetails(ctx: Ctx, args: { query: string }): ToolResult {
 function draftReminder(ctx: Ctx, args: { query: string }): ToolResult {
   const rent = section(ctx, "doorloop_rent");
   if (!rent) return unavailable("DoorLoop rent");
-  const l = findLeases(ctx, args.query ?? "")[0];
+  const found = findLeases(ctx, args.query ?? "");
+  if (found.length > 1) return ambiguousLease(found);
+  const l = found[0];
   if (!l) return { data: { drafted: false, reason: "No lease matched " + JSON.stringify(args.query) }, blocks: [], sources: [], amounts: [], suggestions: [] };
-  const overdue = l.api_balance?.overdue_minor ?? 0;
+  const overdue = l.api_balance?.overdue_minor;
+  if (overdue == null || !rent.collected_at) return unavailable("The lease balance or its collection date");
   if (overdue <= 0) return { data: { drafted: false, reason: "DoorLoop shows no overdue balance for this lease." }, blocks: [], sources: [], amounts: [], suggestions: [] };
-  const asOf = new Date(rent.collected_at ?? Date.now()).toLocaleDateString("en-US", { timeZone: ctx.timezone, month: "long", day: "numeric" });
+  const asOf = new Date(rent.collected_at).toLocaleDateString("en-US", { timeZone: ctx.timezone, month: "long", day: "numeric" });
   const body = `Hi ${tenantName(l)},\n\nOur records show an overdue balance of ${money(overdue)} on your lease at ${leaseLabel(l)} as of ${asOf}. ` +
     `If you have already paid, please reply with the payment date and reference so we can match it.\n\nThank you,\nRotolo Properties`;
   return {
@@ -270,18 +289,24 @@ function teamHours(ctx: Ctx): ToolResult {
   if (!s) return unavailable("Time Doctor activity");
   const users: any[] = s.payload?.users ?? [];
   const missing: any[] = s.payload?.scope?.missing ?? [];
-  const total = users.reduce((a, u) => a + (u.tracked_sec ?? 0), 0);
+  const reported = users.filter((u) => typeof u.tracked_sec === "number");
+  const team = s.payload?.team_total?.tracked_sec;
+  const total = typeof team === "number" ? team :
+    (reported.length > 0 && reported.length === users.length ? reported.reduce((a, u) => a + u.tracked_sec, 0) : null);
+  const noActivity = s.payload?.activity_status === "no_activity";
+  const configured = s.payload?.scope?.intended?.length || users.length + missing.length;
   const h = (sec: number) => (sec / 3600).toFixed(1) + " h";
   return {
-    data: { work_date: s.payload?.work_date, total_tracked: h(total), users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
+    data: { work_date: s.payload?.work_date, total_tracked: total == null ? null : h(total), activity_status: noActivity ? "no_activity" : undefined, users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
       active: u.active_sec == null ? null : h(u.active_sec), idle: u.idle_sec == null ? null : h(u.idle_sec) })),
       missing: missing.map((m) => m.name + " (" + m.reason + ")"), note: "Untracked gaps are not evidence of non-work." },
     blocks: [
-      { type: "metric", label: "Tracked hours · " + (s.payload?.work_date ?? "previous day"), value: h(total),
-        caption: `${users.length} of ${users.length + missing.length} users reporting`,
-        chip: missing.length ? { text: "Partial", tone: "wa" } : { text: "Complete", tone: "ok" } },
-      ...(users.length > 1 ? [{ type: "bars" as const, bars: users.map((u) => ({ label: String(u.name).split(" ").slice(-2).join(" "),
-        value: u.tracked_sec ?? 0, display: u.tracked_sec == null ? "—" : h(u.tracked_sec) })) }] : []),
+      { type: "metric", label: "Tracked hours · " + (s.payload?.work_date ?? "previous day"), value: noActivity ? "No recorded activity" : total == null ? "Not returned" : h(total),
+        caption: `${reported.length} of ${configured} users covered`,
+        chip: s.status !== "complete" || reported.length < configured
+          ? { text: "Partial", tone: "wa" } : { text: "Complete", tone: "ok" } },
+      ...(reported.length > 1 ? [{ type: "bars" as const, bars: reported.map((u) => ({ label: String(u.name).split(" ").slice(-2).join(" "),
+        value: u.tracked_sec, display: h(u.tracked_sec) })) }] : []),
     ],
     sources: [reportSource(ctx, s, "time", "Time Doctor daily activity", "Team")], amounts: [],
     suggestions: [],

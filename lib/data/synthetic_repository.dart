@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:timezone/timezone.dart' as tz;
 
@@ -111,6 +112,12 @@ class SyntheticRepository implements OpsRepository {
 
   List<Json> get _sortedReports => [..._reports]
     ..sort((a, b) => asString(b['generated_at'])!.compareTo(asString(a['generated_at'])!));
+
+  @override
+  Future<void> requestPasswordReset(String email) async {}
+
+  @override
+  Future<void> finishPasswordReset(String password) async => throw const AuthFailure('Password changes require a live account.');
 
   @override
   Future<List<ReportSummary>> listReports() async {
@@ -262,7 +269,10 @@ class SyntheticRepository implements OpsRepository {
   }
 
   @override
-  Future<PaymentSubmission> submitPayment(PaymentDraft d) async {
+  Future<Uint8List> readReceipt(String path) async => throw const PaymentRuleException('Receipt images are available in live mode.');
+
+  @override
+  Future<PaymentSubmission> submitPayment(PaymentDraft d, {PaymentReceipt? receipt}) async {
     final user = _requireUser();
     if (!(user.canSubmitPayments || user.role == AppRole.owner)) {
       throw const PaymentRuleException('Not authorised to submit payments');

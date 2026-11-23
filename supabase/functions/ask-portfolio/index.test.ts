@@ -4,7 +4,7 @@
 import { handle } from "./index.ts";
 
 const fixture = JSON.parse(await Deno.readTextFile(new URL("../../../assets/fixtures/synthetic_reports.json", import.meta.url))).reports[0];
-const report = { id: "r1", business_date: fixture.business_date, generated_at: fixture.generated_at, data_mode: fixture.data_mode, status: fixture.status,
+const report = { id: "r1", business_date: fixture.business_date, generated_at: fixture.generated_at, data_mode: "live", status: fixture.status,
   report_sections: fixture.sections };
 
 function assert(cond: unknown, msg: string): asserts cond { if (!cond) throw new Error(msg); }
@@ -13,7 +13,7 @@ const ask = (text: string, auth = "Bearer user-jwt") =>
   new Request("https://fn.test/ask-portfolio", { method: "POST", headers: { authorization: auth, "content-type": "application/json" },
     body: JSON.stringify({ messages: [{ role: "user", text }] }) });
 
-/// openaiSteps: successive model messages (tool calls, then a final answer).
+/// Capture the model request and all caller-scoped reads.
 function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] }, opts: { authOk?: boolean; sections?: any[] } = {}) {
   let step = 0;
   return (async (input: string | URL | Request, init?: RequestInit) => {
@@ -24,7 +24,10 @@ function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] 
       seen.restAuth.push(headers.get("authorization") ?? "");
       const path = url.slice("https://db.test/rest/v1/".length);
       if (path.startsWith("profiles")) return Response.json([{ id: "u1", active: true }]);
-      if (path.startsWith("reports")) return Response.json([{ ...report, report_sections: opts.sections ?? report.report_sections }]);
+      if (path.startsWith("reports")) {
+        assert(new URL(url).searchParams.get("data_mode") === "eq.live", "signed-in assistant must only query live reports");
+        return Response.json([{ ...report, report_sections: opts.sections ?? report.report_sections }]);
+      }
       return Response.json([]);
     }
     if (url === "https://api.openai.com/v1/chat/completions") {
@@ -47,20 +50,21 @@ Deno.test("grounded answer: tool cards, sources, user-scoped reads", async () =>
   assert(body.answer.includes("$3,125.50"), "answer kept");
   assert(body.blocks[0].type === "metric" && body.blocks[0].value === "$3,125.50", "metric from tool");
   assert(body.sources[0].kind === "ledger", "source");
-  assert(body.data_mode === "synthetic", "data mode passed through");
+  assert(body.data_mode === "live", "data mode passed through");
   assert(seen.restAuth.every((a) => a === "Bearer user-jwt"), "every read uses the caller's JWT (RLS)");
-  const toolMsg = seen.openai[1].messages.find((m: any) => m.role === "tool");
-  assert(toolMsg && toolMsg.content.includes("$3,125.50"), "tool result sent to the model");
+  assert(seen.openai.length === 1, "the model only selects tools");
+  const transmitted = JSON.stringify(seen.openai);
+  assert(!transmitted.includes("$3,125.50") && !transmitted.includes("Tenant Bravo"), "retrieved figures and names stay in Supabase");
 });
 
-Deno.test("invented dollar figure is replaced, cards stay", async () => {
+Deno.test("model copy is ignored, exact figures and cards come from the report", async () => {
   const seen = { openai: [] as any[], restAuth: [] as string[] };
   const res = await handle(ask("How much is late?"), env(), fakeHttp([
     call("get_overdue_rent"),
     { role: "assistant", content: "Roughly $3,100 is late." },
   ], seen));
   const body = await res.json();
-  assert(body.answer === "Here is what the latest records show.", "guard replaced text: " + body.answer);
+  assert(body.answer.includes("$3,125.50") && !body.answer.includes("$3,100"), "only verified figures are used");
   assert(body.blocks.length > 0, "cards kept");
 });
 
@@ -83,6 +87,5 @@ Deno.test("staff (deals only): rent tool reports unavailable, no rent cards", as
   ], seen, { sections: report.report_sections.filter((s: any) => s.source === "fub_deals") }));
   const body = await res.json();
   assert(body.blocks.length === 0, "no rent cards for staff");
-  const toolMsg = seen.openai[1].messages.find((m: any) => m.role === "tool");
-  assert(toolMsg.content.includes('"available":false'), "model told it is unavailable");
+  assert(body.answer.includes("not available"), "assistant tells the user the data is unavailable");
 });

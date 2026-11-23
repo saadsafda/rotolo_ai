@@ -46,6 +46,46 @@ test("lease lookup by tenant, unit or reference; reminder draft is never sent", 
   assert.equal((runTool("draft_rent_reminder", { query: "Tenant Charlie" }, ctx).data as any).drafted, false); // nothing overdue
 });
 
+test("lease lookup and drafts require a unique match", () => {
+  const ctx = ctxFrom(fixture);
+  for (const tool of ["get_lease", "draft_rent_reminder"]) {
+    const reply = runTool(tool, { query: "Maple Court" }, ctx);
+    assert.ok((reply.data as any).matches > 1);
+    assert.equal(reply.blocks[0].type, "list");
+    assert.equal(reply.blocks[0].title, "Multiple leases match");
+    assert.deepEqual(reply.amounts, []);
+  }
+});
+
+test("rent totals stay unavailable when every matching balance is missing", () => {
+  const ctx = ctxFrom(fixture);
+  const section = ctx.sections.doorloop_rent;
+  ctx.sections.doorloop_rent = {
+    ...section,
+    payload: { leases: [{ ...section.payload.leases[0], api_balance: { overdue_minor: null } }] },
+  };
+  const reply = runTool("get_overdue_rent", {}, ctx);
+  assert.equal((reply.data as any).available, false);
+  assert.deepEqual(reply.amounts, []);
+});
+
+test("team hours distinguish missing totals from a confirmed empty day", () => {
+  const ctx = ctxFrom(fixture);
+  const section = ctx.sections.time_doctor;
+  const noMetrics = { ...section.payload, team_total: {}, users: [{ tracked_sec: null }] };
+  ctx.sections.time_doctor = { ...section, status: "partial", payload: noMetrics };
+  const missing = runTool("get_team_hours", {}, ctx);
+  assert.equal((missing.blocks[0] as any).value, "Not returned");
+  assert.equal((missing.data as any).total_tracked, null);
+
+  ctx.sections.time_doctor.payload = {
+    ...noMetrics, team_total: { tracked_sec: 0 }, users: [{ tracked_sec: 0 }], activity_status: "no_activity",
+  };
+  const empty = runTool("get_team_hours", {}, ctx);
+  assert.equal((empty.blocks[0] as any).value, "No recorded activity");
+  assert.equal((empty.data as any).total_tracked, "0.0 h");
+});
+
 test("deals: evidence review flag respects reviews; untrusted excerpt is labelled", () => {
   const ctx = ctxFrom(fixture);
   const nr: any = runTool("list_deals", { filter: "needs_review" }, ctx).data;

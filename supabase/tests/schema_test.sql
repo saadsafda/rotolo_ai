@@ -295,4 +295,38 @@ select count(*) = 0 as push_once from public.n8n_claim_report_push(:'live_report
   select 1 / 0;
 \endif
 reset role;
+-- Receipts are scoped to their submitter and visible to reviewers only after submission.
+grant select, insert on storage.objects to authenticated;
+set role authenticated;
+select public.t_as('00000000-0000-0000-0000-00000000000c');
+select public.t_expect_error($$insert into storage.objects(bucket_id, name) values ('payment-receipts', '00000000-0000-0000-0000-00000000000c/88888888-8888-8888-8888-888888888888/' || repeat('c',64) || '.png')$$, 'row-level security');
+select public.t_as('00000000-0000-0000-0000-00000000000b');
+insert into storage.objects (bucket_id, name)
+values ('payment-receipts', '00000000-0000-0000-0000-00000000000b/88888888-8888-8888-8888-888888888888/' || repeat('c',64) || '.png');
+do $$ begin assert (select count(*) from storage.objects) = 1, 'submitter can read their upload for retries'; end $$;
+select public.t_as('00000000-0000-0000-0000-00000000000a');
+do $$ begin assert (select count(*) from storage.objects) = 0, 'reviewers cannot see unsubmitted files'; end $$;
+select public.t_expect_error($$select public.submit_outside_payment(
+ '88888888-8888-8888-8888-888888888888','aaaaaaaaaaaaaaaaaaaaaaaa',700,'USD',current_date,'EFT','Zelle','RECEIPT-01',
+ null,null,null,null,null,'00000000-0000-0000-0000-00000000000b/88888888-8888-8888-8888-888888888888/' || repeat('c',64) || '.png',true
+)$$, 'Receipt does not belong');
+select public.t_as('00000000-0000-0000-0000-00000000000b');
+select id from public.submit_outside_payment(
+ '88888888-8888-8888-8888-888888888888','aaaaaaaaaaaaaaaaaaaaaaaa',700,'USD',current_date,'EFT','Zelle','RECEIPT-01',
+ null,null,null,null,null,'00000000-0000-0000-0000-00000000000b/88888888-8888-8888-8888-888888888888/' || repeat('c',64) || '.png',true
+);
+select public.t_as('00000000-0000-0000-0000-00000000000a');
+do $$ begin assert (select count(*) from storage.objects) = 1, 'reviewers can see submitted receipts'; end $$;
+select public.t_as('00000000-0000-0000-0000-00000000000c');
+do $$ begin assert (select count(*) from storage.objects) = 0, 'staff cannot read receipts'; end $$;
+
+select public.register_report_device(repeat('q', 100), 'android', true);
+reset role;
+do $$ begin assert (select quiet_hours from public.device_tokens where token = repeat('q', 100)), 'quiet hours persist per device'; end $$;
+set role authenticated;
+select public.t_as('00000000-0000-0000-0000-00000000000b');
+select public.register_device_token(repeat('q', 100), 'android');
+reset role;
+do $$ begin assert not (select quiet_hours from public.device_tokens where token = repeat('q', 100)), 'legacy app registration resets preferences on transfer'; end $$;
+
 \echo ALL SCHEMA TESTS PASSED

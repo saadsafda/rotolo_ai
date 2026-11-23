@@ -37,7 +37,10 @@ class ReportPush {
     if (token == null) throw StateError('The notification service is unavailable.');
     if (_db.auth.currentUser?.id != userId) return;
     final previous = _prefs.getString(_savedToken(userId));
-    await _db.rpc<void>('register_device_token', params: {'p_token': token, 'p_platform': platform});
+    await _db.rpc<void>('register_report_device', params: {
+      'p_token': token, 'p_platform': platform,
+      'p_quiet_hours': _prefs.getBool('rotolo-notify-quiet') ?? false,
+    });
     if (previous != null && previous != token) {
       await _db.rpc<void>('unregister_device_token', params: {'p_token': previous});
     }
@@ -54,6 +57,10 @@ class ReportPush {
     if (token == null) return;
     await _db.rpc<void>('unregister_device_token', params: {'p_token': token});
     await _prefs.remove(_savedToken(userId));
+  }
+
+  Future<void> applyQuietHours(String userId) async {
+    if (optedIn(userId)) await _register(userId);
   }
 
   Future<void> refresh(String userId, {String? updatedToken}) async {

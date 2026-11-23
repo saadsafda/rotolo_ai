@@ -28,18 +28,25 @@ const _supabaseKey = String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   initTimeZones();
+  final prefs = await SharedPreferences.getInstance();
   if (_supabaseUrl.isEmpty || _supabaseKey.isEmpty) {
     final fixtures = await rootBundle.loadString('assets/fixtures/synthetic_reports.json');
     runApp(ProviderScope(
       // Surface errors immediately instead of silently retrying.
       retry: (_, _) => null,
-      overrides: [fixtureJsonProvider.overrideWithValue(fixtures)],
+      overrides: [fixtureJsonProvider.overrideWithValue(fixtures), devicePreferencesProvider.overrideWithValue(prefs)],
       child: const RotoloApp(),
     ));
     return;
   }
 
-  await Supabase.initialize(url: _supabaseUrl, publishableKey: _supabaseKey);
+  final resetUri = SupabaseOpsRepository.passwordResetUri;
+  await Supabase.initialize(
+    url: _supabaseUrl, publishableKey: _supabaseKey,
+    authOptions: FlutterAuthClientOptions(
+      detectSessionInUriPredicate: (uri) => uri.scheme == resetUri.scheme && uri.host == resetUri.host,
+    ),
+  );
   final client = Supabase.instance.client;
   ReportPush? push;
   if (!kIsWeb) {
@@ -51,7 +58,7 @@ Future<void> main() async {
     if (options != null) {
       try {
         await Firebase.initializeApp(options: options);
-        push = ReportPush(client, await SharedPreferences.getInstance(),
+        push = ReportPush(client, prefs,
             defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android');
       } catch (_) {
         debugPrint('Unable to initialize report notifications.');
@@ -61,22 +68,44 @@ Future<void> main() async {
   final repo = SupabaseOpsRepository(client, push: push);
   final container = ProviderContainer(
     retry: (_, _) => null,
-    overrides: [repositoryProvider.overrideWithValue(repo), reportPushProvider.overrideWithValue(push)],
+    overrides: [
+      repositoryProvider.overrideWithValue(repo), reportPushProvider.overrideWithValue(push),
+      devicePreferencesProvider.overrideWithValue(prefs),
+    ],
   );
-  // Resume a stored session; if the profile is gone or inactive, sign out.
-  try {
-    final user = await repo.restoreSession();
-    if (user != null) {
-      container.read(sessionProvider.notifier).signIn(user);
-    } else if (client.auth.currentSession != null) {
-      await client.auth.signOut();
-    }
-  } catch (_) {
-    // Offline or schema missing: start at sign-in.
-  }
+  const recoveryKey = 'rotolo-recovery-user';
+  final recovery = container.read(passwordRecoveryProvider.notifier);
+  final recoveryUser = prefs.getString(recoveryKey);
+  if (recoveryUser != null && recoveryUser == client.auth.currentUser?.id) recovery.setActive(true);
   client.auth.onAuthStateChange.listen((change) {
-    if (change.event == AuthChangeEvent.signedOut) container.read(sessionProvider.notifier).signOut();
+    if (change.event == AuthChangeEvent.passwordRecovery && change.session != null) {
+      recovery.setActive(true);
+      unawaited(prefs.setString(recoveryKey, change.session!.user.id));
+    }
+    if (change.event == AuthChangeEvent.signedOut) {
+      unawaited(prefs.remove(recoveryKey));
+      recovery.setActive(false);
+      container.read(sessionProvider.notifier).signOut();
+    }
+  }, onError: (Object error, StackTrace stack) {
+    debugPrint('Authentication connection temporarily unavailable.');
   });
+
+  // A recovery session stays on the password form instead of opening the dashboard.
+  if (!container.read(passwordRecoveryProvider)) {
+    try {
+      final user = await repo.restoreSession();
+      if (!container.read(passwordRecoveryProvider)) {
+        if (user != null) {
+          container.read(sessionProvider.notifier).signIn(user);
+        } else if (client.auth.currentSession != null) {
+          await client.auth.signOut();
+        }
+      }
+    } catch (_) {
+      // Offline or schema missing: start at sign-in.
+    }
+  }
   final notifications = push;
   if (notifications != null) {
     container.listen(sessionProvider, (_, user) {

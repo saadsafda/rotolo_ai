@@ -2,7 +2,7 @@
 
 A mobile app for Android and iOS that replaces WhatsApp for Harry Rotolo's real-estate operations. It covers daily reports, deals and email evidence, rent and payment review, outside-payment approval, maintenance tasks and staff activity.
 
-The app supports demo mode and a Supabase-backed mode. The live report worker reuses the read-only vendor integrations and stores each report under the same run ID shown in the app. Live payments support submission and review. DoorLoop payment posting remains disabled. Device report alerts are opt-in from Settings once the Firebase sender is configured.
+The app supports demo mode and a Supabase-backed mode. The live report worker reuses the read-only vendor integrations and stores each report under the same run ID shown in the app. Live payments support submission, private JPEG/PNG receipt images, and review. DoorLoop payment posting remains disabled. Device report alerts are opt-in from Settings once the Firebase sender is configured.
 
 The UI follows the Claude Design prototype "Real Estate AI" (IBM Plex type, light and dark tokens in `lib/ui/theme.dart`). Tabs: Home, Reports, Payments, Tasks, More (Deals, Team activity, Notifications, Integrations, Settings). Staff see only the tabs for sections they may read.
 
@@ -69,3 +69,9 @@ For iPhone delivery, add the APNs authentication key to the Firebase iOS app,
 and sign the physical-device build with a provisioning profile that includes
 Push Notifications. Users can enable **Send report alerts to this device**
 under Settings. A report alert contains generic text and a report ID.
+
+### Account recovery and release builds
+
+- Allow the exact redirect `com.rotolo.operations://password-reset` in Supabase Auth. Users request a link from **Forgot password?** and open it on the same device to enter a new password.
+- The receipt and report-alert server changes are in `20261123100000_private_receipts_and_quiet_hours.sql`. Report push skips opted-in quiet hours from 9 p.m. to 7 a.m. Eastern. The report remains in the app.
+- Android release signing uses the project's upload key. Configure `storeFile`, `storePassword`, `keyAlias`, and `keyPassword` in the ignored `android/key.properties` file. Keep the keystore and its passwords outside Git. Use a provisioning profile and distribution certificate for the Rotolo iOS bundle ID.

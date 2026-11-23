@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/money.dart';
@@ -36,6 +37,8 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
   PaymentMethod? _method;
   bool _confirmed = false;
   bool _submitting = false;
+  bool _pickingReceipt = false;
+  PaymentReceipt? _receipt;
   String? _submitError;
   Map<String, String> _errors = {};
   PaymentSubmission? _result;
@@ -129,6 +132,26 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
 
   void _close() => context.canPop() ? context.pop() : context.go('/payments');
 
+  Future<void> _pickReceipt() async {
+    if (_pickingReceipt) return;
+    setState(() => _pickingReceipt = true);
+    try {
+      final file = await ImagePicker().pickImage(source: ImageSource.gallery, requestFullMetadata: false);
+      if (file == null || !mounted) return;
+      if (await file.length() > PaymentReceipt.maxBytes) {
+        throw const PaymentRuleException('Choose an image under 5 MB.');
+      }
+      final receipt = PaymentReceipt(await file.readAsBytes());
+      if (mounted) setState(() => _receipt = receipt);
+    } on PaymentRuleException catch (error) {
+      if (mounted) showToast(context, error.message);
+    } catch (_) {
+      if (mounted) showToast(context, 'Could not select a receipt image.');
+    } finally {
+      if (mounted) setState(() => _pickingReceipt = false);
+    }
+  }
+
   Future<void> _submit(RentPayload? rent) async {
     if (_submitting || !_confirmed) return;
     final lease = _lease(rent);
@@ -153,7 +176,7 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
             unit: lease.unit,
             tenantName: lease.tenants?.join(', ') ?? lease.leaseName,
             notes: notes.isEmpty ? null : notes,
-          ));
+          ), receipt: _receipt);
       ref.read(dataVersionProvider.notifier).bump();
       if (mounted) setState(() => _result = sub);
     } on PaymentRuleException catch (e) {
@@ -171,6 +194,7 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
         _amount.clear();
         _reference.clear();
         _notes.clear();
+        _receipt = null;
         _date = _today;
         _method = null;
         _confirmed = false;
@@ -463,20 +487,20 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
       _error('ref'),
       const SizedBox(height: 16),
       _label('Receipt'),
-      Container(
-        height: 64,
-        decoration: BoxDecoration(color: t.sf2, borderRadius: BorderRadius.circular(12), border: Border.all(color: t.bd)),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_photo_alternate_outlined, size: 22, color: t.mu),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text('Receipt upload not connected yet',
-                overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.mu)),
+      if (ref.watch(repositoryProvider).isSynthetic)
+        const Text('Receipt attachments are available in live mode.')
+      else
+        Wrap(spacing: 8, children: [
+          OutlinedButton.icon(
+            onPressed: _pickingReceipt ? null : _pickReceipt,
+            icon: const Icon(Icons.attach_file),
+            label: Text(_receipt == null ? 'Attach image' : 'Replace image'),
           ),
+          if (_receipt != null)
+            TextButton(onPressed: () => setState(() => _receipt = null), child: const Text('Remove image')),
         ]),
-      ),
       const SizedBox(height: 8),
-      Text('Uploads go to private storage once the backend is connected. A receipt supports the request. It is not verified payment evidence.',
+      Text('JPEG or PNG, up to 5 MB. Receipts are stored privately for payment review.',
           style: TextStyle(fontSize: 13, height: 1.45, color: t.mu)),
       const SizedBox(height: 16),
       _label('Notes', hint: '(optional)'),
@@ -504,7 +528,7 @@ class _SubmitPaymentScreenState extends ConsumerState<SubmitPaymentScreen> {
       ('Payment date', _date == null ? '—' : fullDate(_date!), 2),
       ('Method', _method?.label ?? '—', 2),
       ('Reference', _reference.text.trim().toUpperCase(), 3),
-      ('Receipt', 'Not attached', 3),
+      ('Receipt', _receipt == null ? 'Not attached' : 'Image attached', 3),
       ('Notes', _notes.text.trim().isEmpty ? 'None' : _notes.text.trim(), 3),
     ];
     return [

@@ -28,6 +28,9 @@ final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
   final session = ValueNotifier<AppUser?>(ref.read(sessionProvider));
+  final recovery = ValueNotifier(ref.read(passwordRecoveryProvider));
+  ref.listen(passwordRecoveryProvider, (_, active) => recovery.value = active);
+  ref.onDispose(recovery.dispose);
   // A deliberate sign-out returns to a clean sign-in; only deep links opened
   // while signed out are kept for after sign-in.
   var signedOut = false;
@@ -40,10 +43,11 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: rootNavigatorKey,
     initialLocation: '/assistant',
-    refreshListenable: session,
+    refreshListenable: Listenable.merge([session, recovery]),
     redirect: (context, state) {
       final signedIn = session.value != null;
       final atSignIn = state.matchedLocation == '/sign-in';
+      if (recovery.value) return atSignIn ? null : '/sign-in';
       if (!signedIn) {
         if (atSignIn) return null;
         if (signedOut) {

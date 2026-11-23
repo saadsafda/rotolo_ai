@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/payloads.dart';
 import '../models/payment.dart';
@@ -25,12 +28,39 @@ class AppSettings {
       );
 }
 
+final devicePreferencesProvider = Provider<SharedPreferences?>((ref) => null);
+
 class SettingsNotifier extends Notifier<AppSettings> {
   @override
-  AppSettings build() => const AppSettings();
-  void setTheme(ThemeMode m) => state = state.copyWith(themeMode: m);
-  void setTextScale(double s) => state = state.copyWith(textScale: s);
-  void togglePref(String key) => state = state.copyWith(prefs: {...state.prefs, key: !(state.prefs[key] ?? false)});
+  AppSettings build() {
+    final saved = ref.watch(devicePreferencesProvider);
+    return AppSettings(
+      themeMode: ThemeMode.values.firstWhere(
+        (mode) => mode.name == saved?.getString('rotolo-theme'),
+        orElse: () => ThemeMode.light,
+      ),
+      textScale: saved?.getDouble('rotolo-text-scale') ?? 1.0,
+      prefs: {for (final entry in AppSettings.defaultPrefs.entries)
+        entry.key: saved?.getBool('rotolo-notify-${entry.key}') ?? entry.value},
+    );
+  }
+
+  void setTheme(ThemeMode mode) {
+    state = state.copyWith(themeMode: mode);
+    unawaited(ref.read(devicePreferencesProvider)?.setString('rotolo-theme', mode.name));
+  }
+
+  void setTextScale(double scale) {
+    state = state.copyWith(textScale: scale);
+    unawaited(ref.read(devicePreferencesProvider)?.setDouble('rotolo-text-scale', scale));
+  }
+
+  void setPreference(String key, bool value) {
+    state = state.copyWith(prefs: {...state.prefs, key: value});
+    unawaited(ref.read(devicePreferencesProvider)?.setBool('rotolo-notify-$key', value));
+  }
+
+  void togglePref(String key) => setPreference(key, !(state.prefs[key] ?? false));
 }
 
 final settingsProvider = NotifierProvider<SettingsNotifier, AppSettings>(SettingsNotifier.new);
@@ -43,8 +73,16 @@ class ReadNotifications extends Notifier<Map<String, Set<String>>> {
   @override
   Map<String, Set<String>> build() => const {};
 
-  void markRead(String userId, String id) => state = {...state, userId: {...?state[userId], id}};
-  void markAll(String userId, Iterable<String> ids) => state = {...state, userId: {...?state[userId], ...ids}};
+  void markRead(String userId, String id) => markAll(userId, [id]);
+
+  void markAll(String userId, Iterable<String> ids) {
+    final saved = ref.read(devicePreferencesProvider);
+    final key = 'rotolo-read-$userId';
+    final previous = state[userId] ?? saved?.getStringList(key)?.toSet() ?? const <String>{};
+    final seen = {...ids, ...previous}.take(250).toSet();
+    state = {...state, userId: seen};
+    unawaited(saved?.setStringList(key, seen.toList()));
+  }
 }
 
 final readNotificationsProvider = NotifierProvider<ReadNotifications, Map<String, Set<String>>>(ReadNotifications.new);
@@ -117,11 +155,20 @@ AsyncValue<List<AppNotification>> watchNotifications(WidgetRef ref) {
   final user = ref.watch(sessionProvider);
   final zone = ref.watch(repositoryProvider).businessTimezone;
   final now = ref.watch(clockProvider)();
-  return snap.whenData((s) => user == null ? const [] : buildNotifications(s, user: user, now: now, zone: zone));
+  final prefs = ref.watch(settingsProvider).prefs;
+  return snap.whenData((s) => user == null ? const [] : [
+    for (final item in buildNotifications(s, user: user, now: now, zone: zone))
+      if (prefs[item.category.toLowerCase()] ?? true) item,
+  ]);
 }
 
-Set<String> watchReadIds(WidgetRef ref) =>
-    ref.watch(readNotificationsProvider)[ref.watch(sessionProvider)?.id ?? ''] ?? const {};
+Set<String> watchReadIds(WidgetRef ref) {
+  final userId = ref.watch(sessionProvider)?.id;
+  if (userId == null) return const {};
+  return ref.watch(readNotificationsProvider)[userId] ??
+      ref.watch(devicePreferencesProvider)?.getStringList('rotolo-read-$userId')?.toSet() ??
+      const {};
+}
 
 int watchUnread(WidgetRef ref) {
   final list = watchNotifications(ref).value ?? const <AppNotification>[];

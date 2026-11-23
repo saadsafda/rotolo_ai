@@ -26,6 +26,14 @@ class SessionNotifier extends Notifier<AppUser?> {
   }
 }
 
+class PasswordRecovery extends Notifier<bool> {
+  @override
+  bool build() => false;
+  void setActive(bool value) => state = value;
+}
+
+final passwordRecoveryProvider = NotifierProvider<PasswordRecovery, bool>(PasswordRecovery.new);
+
 final sessionProvider = NotifierProvider<SessionNotifier, AppUser?>(SessionNotifier.new);
 
 /// Phase 3: synthetic only. Phase 4 swaps in a Supabase implementation here.

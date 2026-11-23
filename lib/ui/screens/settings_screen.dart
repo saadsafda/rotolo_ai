@@ -38,6 +38,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Future<void> _setQuietHours(ReportPush push, String userId, bool enabled) async {
+    setState(() => _savingPush = true);
+    final notifier = ref.read(settingsProvider.notifier);
+    notifier.setPreference('quiet', enabled);
+    try {
+      await push.applyQuietHours(userId);
+    } catch (_) {
+      if (mounted) {
+        notifier.setPreference('quiet', !enabled);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not update quiet hours. Try again.')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingPush = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(sessionProvider)!;
@@ -51,7 +67,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ('payments', 'Payments and approvals'),
       ('tasks', 'Overdue and claimed tasks'),
       ('sync', 'Sync failures'),
-      ('quiet', 'Quiet hours 9 PM – 7 AM ET'),
     ];
     return Column(children: [
       const DetailHeader(title: 'Settings', fallback: '/more'),
@@ -102,6 +117,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               value: push.optedIn(user.id),
               onChanged: _savingPush ? null : (enabled) => _setPush(push, user.id, enabled),
               title: const Text('Send report alerts to this device'),
+            ),
+          if (push != null)
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: settings.prefs['quiet'] ?? false,
+              onChanged: _savingPush ? null : (enabled) => _setQuietHours(push, user.id, enabled),
+              title: const Text('Quiet hours 9 PM – 7 AM ET'),
+              subtitle: const Text('Report alerts are skipped during quiet hours. Reports still appear in the app.'),
             ),
           Text('Notification preferences are stored on this device.', style: TextStyle(fontSize: 12, color: t.mu)),
           const SizedBox(height: 16),

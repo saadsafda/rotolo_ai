@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../models/app_user.dart';
 import '../models/assistant.dart';
 import '../models/payment.dart';
@@ -23,6 +25,8 @@ abstract class OpsRepository {
   /// The signed-in user from a stored session (app restart), or null.
   Future<AppUser?> restoreSession();
   Future<void> signOut();
+  Future<void> requestPasswordReset(String email);
+  Future<void> finishPasswordReset(String password);
 
   Future<List<ReportSummary>> listReports();
 
@@ -35,7 +39,8 @@ abstract class OpsRepository {
   Stream<SyncRun> refresh({required String mode});
 
   Future<List<PaymentSubmission>> listPayments();
-  Future<PaymentSubmission> submitPayment(PaymentDraft draft);
+  Future<PaymentSubmission> submitPayment(PaymentDraft draft, {PaymentReceipt? receipt});
+  Future<Uint8List> readReceipt(String path);
   Future<PaymentSubmission> reviewPayment(String id, ReviewAction action, {String? reason});
   Future<PaymentSubmission> requestPosting(String id);
   Future<PaymentSubmission> addPaymentComment(String id, String body);

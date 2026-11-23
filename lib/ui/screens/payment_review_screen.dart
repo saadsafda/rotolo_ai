@@ -26,6 +26,26 @@ class _PaymentReviewScreenState extends ConsumerState<PaymentReviewScreen> {
   final _rejectNote = TextEditingController();
   final _comment = TextEditingController();
 
+  void _openReceipt(String path) {
+    final result = ref.read(repositoryProvider).readReceipt(path);
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Receipt image'),
+        content: FutureBuilder(
+          future: result,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) return const Text('Could not open this receipt.');
+            final bytes = snapshot.data;
+            if (bytes == null) return const Center(widthFactor: 2, heightFactor: 2, child: CircularProgressIndicator());
+            return Image.memory(bytes, cacheWidth: 1600, fit: BoxFit.contain, errorBuilder: (_, _, _) => const Text('Could not read this image.'));
+          },
+        ),
+        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Close'))],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _rejectNote.dispose();
@@ -203,7 +223,14 @@ class _PaymentReviewScreenState extends ConsumerState<PaymentReviewScreen> {
       ],
       const SizedBox(height: 16),
       ListCard(title: 'Evidence', children: [
-        _evidenceRow(Icons.image_outlined, 'Receipt image', 'None attached', Tone.na),
+        if (p.receiptPath case final path?)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(onPressed: () => _openReceipt(path), icon: const Icon(Icons.image_outlined),
+                label: const Text('Open receipt image')),
+          )
+        else
+          _evidenceRow(Icons.image_outlined, 'Receipt image', 'None attached', Tone.na),
         _evidenceRow(Icons.tag_rounded, 'Reference number', 'Not verified', Tone.wa),
         _evidenceRow(Icons.account_balance_outlined, 'Bank deposit match', 'Unavailable', Tone.na),
         _evidenceRow(Icons.how_to_reg_outlined, 'Submitter says funds received', d.fundsConfirmed ? 'Attested' : 'Not attested', Tone.na),

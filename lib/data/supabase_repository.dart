@@ -1,9 +1,12 @@
-import '../core/report_push.dart';
 import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
 
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../core/report_push.dart';
 import '../models/app_user.dart';
 import '../models/assistant.dart';
 import '../models/json.dart';
@@ -102,6 +105,32 @@ class SupabaseOpsRepository implements OpsRepository {
       }
     }
     await _db.auth.signOut();
+  }
+
+  static final passwordResetUri = Uri.parse('com.rotolo.operations://password-reset');
+
+  @override
+  Future<void> requestPasswordReset(String email) async {
+    try {
+      await _db.auth.resetPasswordForEmail(email.trim(), redirectTo: passwordResetUri.toString());
+    } on AuthException catch (error) {
+      if (error.statusCode == '429') throw const AuthFailure('Too many requests. Wait a moment and try again.');
+      throw const AuthFailure('Password reset is temporarily unavailable. Try again later.');
+    } catch (_) {
+      throw const AuthFailure('Could not reach the server. Check your connection and try again.');
+    }
+  }
+
+  @override
+  Future<void> finishPasswordReset(String password) async {
+    try {
+      await _db.auth.updateUser(UserAttributes(password: password));
+    } on AuthException catch (error) {
+      throw AuthFailure(error.message);
+    } catch (_) {
+      throw const AuthFailure('Could not update the password. Check your connection and try again.');
+    }
+    await signOut();
   }
 
   Future<void> _loadConfig() async {
@@ -245,6 +274,7 @@ class SupabaseOpsRepository implements OpsRepository {
       status: _status(asString(r['status'])),
       decisionReason: asString(r['decision_reason']),
       doorloopPaymentId: asString(r['doorloop_payment_id']),
+      receiptPath: asString(r['receipt_path']),
       events: [
         for (final e in events)
           PaymentEvent(
@@ -298,8 +328,38 @@ class SupabaseOpsRepository implements OpsRepository {
     }
   }
 
+  static const _receiptBucket = 'payment-receipts';
+
+  Future<String> _uploadReceipt(PaymentDraft draft, PaymentReceipt receipt) async {
+    final user = _db.auth.currentUser;
+    if (user == null) throw const PaymentRuleException('Sign in again to attach a receipt.');
+    final digest = sha256.convert(receipt.bytes);
+    final path = '${user.id}/${draft.idempotencyKey}/$digest.${receipt.extension}';
+    final bucket = _db.storage.from(_receiptBucket);
+    try {
+      await bucket.uploadBinary(path, receipt.bytes, fileOptions: FileOptions(contentType: receipt.mimeType));
+    } catch (_) {
+      // A retry can follow an upload whose response was lost. Only reuse an identical file.
+      try {
+        if (sha256.convert(await bucket.download(path)) == digest) return path;
+      } catch (_) {}
+      throw const PaymentRuleException('Could not attach the receipt. Check your connection and try again.');
+    }
+    return path;
+  }
+
   @override
-  Future<PaymentSubmission> submitPayment(PaymentDraft d) => _guard(() async {
+  Future<Uint8List> readReceipt(String path) async {
+    try {
+      return await _db.storage.from(_receiptBucket).download(path);
+    } catch (_) {
+      throw const PaymentRuleException('Could not open the receipt. Check your access and connection.');
+    }
+  }
+
+  @override
+  Future<PaymentSubmission> submitPayment(PaymentDraft d, {PaymentReceipt? receipt}) => _guard(() async {
+        final receiptPath = receipt == null ? null : await _uploadReceipt(d, receipt);
         final row = await _db.rpc('submit_outside_payment', params: {
           'p_idempotency_key': d.idempotencyKey,
           'p_lease_id': d.leaseId,
@@ -314,7 +374,7 @@ class SupabaseOpsRepository implements OpsRepository {
           'p_unit': d.unit,
           'p_tenant_name': d.tenantName,
           'p_notes': d.notes,
-          'p_receipt_path': null,
+          'p_receipt_path': receiptPath,
           'p_funds_confirmed': d.fundsConfirmed,
         });
         return _fetchPayment(asMap(row)['id'] as String);

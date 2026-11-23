@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rotolo_ai_assistant/core/notification_routing.dart';
 import 'package:rotolo_ai_assistant/models/payment.dart';
+import 'package:rotolo_ai_assistant/state/app_state.dart';
 import 'package:rotolo_ai_assistant/state/providers.dart';
 import 'package:rotolo_ai_assistant/ui/router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers.dart';
 
@@ -256,6 +259,36 @@ void main() {
     await tester.pumpAndSettle();
     await go(tester, c, '/home');
     expect(find.descendant(of: bell, matching: find.byType(Text)), findsNothing);
+  });
+
+  testWidgets('a recovery session keeps navigation on the password form', (tester) async {
+    final c = await pumpApp(tester);
+    await signIn(tester, 'demo-owner');
+    c.read(passwordRecoveryProvider.notifier).setActive(true);
+    await tester.pumpAndSettle();
+    expect(find.text('Choose a new password'), findsOneWidget);
+    await go(tester, c, '/home');
+    expect(find.text('Choose a new password'), findsOneWidget);
+    expect(navItem('Home'), findsNothing);
+  });
+
+  test('device preferences survive a new app container', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final first = ProviderContainer(overrides: [devicePreferencesProvider.overrideWithValue(prefs)]);
+    final settings = first.read(settingsProvider.notifier);
+    settings.setTheme(ThemeMode.dark);
+    settings.setTextScale(1.3);
+    settings.setPreference('quiet', true);
+    first.dispose();
+
+    final restored = ProviderContainer(overrides: [devicePreferencesProvider.overrideWithValue(prefs)]);
+    addTearDown(restored.dispose);
+    final value = restored.read(settingsProvider);
+    expect(value.themeMode, ThemeMode.dark);
+    expect(value.textScale, 1.3);
+    expect(value.prefs['quiet'], isTrue);
   });
 
   testWidgets('settings switch to dark theme and larger text', (tester) async {

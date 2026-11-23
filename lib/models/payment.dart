@@ -1,3 +1,36 @@
+import 'dart:typed_data';
+
+class PaymentReceipt {
+  static const maxBytes = 5 * 1024 * 1024;
+
+  PaymentReceipt(this.bytes) {
+    if (bytes.isEmpty || bytes.length > maxBytes) {
+      throw const PaymentRuleException('Choose an image under 5 MB.');
+    }
+    if (_startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+      extension = 'png';
+      mimeType = 'image/png';
+    } else if (_startsWith([0xff, 0xd8, 0xff])) {
+      extension = 'jpg';
+      mimeType = 'image/jpeg';
+    } else {
+      throw const PaymentRuleException('Choose a JPEG or PNG receipt image.');
+    }
+  }
+
+  final Uint8List bytes;
+  late final String extension;
+  late final String mimeType;
+
+  bool _startsWith(List<int> signature) {
+    if (bytes.length <= signature.length) return false;
+    for (var i = 0; i < signature.length; i++) {
+      if (bytes[i] != signature[i]) return false;
+    }
+    return true;
+  }
+}
+
 enum PaymentStatus { submitted, underReview, approved, rejected, posting, posted, failed }
 
 extension PaymentStatusText on PaymentStatus {
@@ -115,6 +148,7 @@ class PaymentSubmission {
     required this.events,
     this.decisionReason,
     this.doorloopPaymentId,
+    this.receiptPath,
     this.comments = const [],
   });
 
@@ -127,6 +161,7 @@ class PaymentSubmission {
   final List<PaymentEvent> events;
   final String? decisionReason;
   final String? doorloopPaymentId;
+  final String? receiptPath;
   final List<PaymentComment> comments;
 
   PaymentSubmission withComment(PaymentComment c) => PaymentSubmission(
@@ -139,6 +174,7 @@ class PaymentSubmission {
         events: events,
         decisionReason: decisionReason,
         doorloopPaymentId: doorloopPaymentId,
+        receiptPath: receiptPath,
         comments: [...comments, c],
       );
 
@@ -153,6 +189,7 @@ class PaymentSubmission {
         events: [...events, event],
         decisionReason: decisionReason ?? this.decisionReason,
         doorloopPaymentId: doorloopPaymentId,
+        receiptPath: receiptPath,
         comments: comments,
       );
 }
