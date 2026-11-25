@@ -4,7 +4,7 @@ A mobile app for Android and iOS that replaces WhatsApp for Harry Rotolo's real-
 
 The app supports demo mode and a Supabase-backed mode. The live report worker reuses the read-only vendor integrations and stores each report under the same run ID shown in the app. Live payments support submission, private JPEG/PNG receipt images, and review. DoorLoop payment posting remains disabled. Device report alerts are opt-in from Settings once the Firebase sender is configured.
 
-The UI follows the Claude Design prototype "Real Estate AI" (IBM Plex type, light and dark tokens in `lib/ui/theme.dart`). Tabs: Home, Reports, Payments, Tasks, More (Deals, Team activity, Notifications, Integrations, Settings). Staff see only the tabs for sections they may read.
+The app opens to **Assistant**. Ask a question, choose a suggested question, or start an email. Answers show charts when a comparison helps. **Reports** keeps the daily briefs, and **More** holds the detailed records and settings available to the signed-in user.
 
 ## Documents
 - [docs/01-n8n-inventory.md](docs/01-n8n-inventory.md): what the 7 exported n8n workflows actually do, their credentials, defects and gaps.
@@ -23,6 +23,17 @@ flutter run --dart-define-from-file=config/supabase.json   # live Supabase proje
 `config/supabase.json` holds only the project URL and the publishable key, which are public by design. Never put the service-role key or database password in this repo or the app.
 
 Apply the Supabase migrations in order and give each invited user an active profile with the appropriate access. Follow the [n8n deployment steps](n8n/README.md) to enable **Reports → Generate report**. Demo reports stay accessible from Reports and are excluded from the live Home and operations screens.
+
+### Assistant email
+
+The app previews one recipient, subject, and message for approval before it calls `send-assistant-email`. It asks for an exact address if a request names a person. Demo mode simulates the confirmation.
+
+To turn on live sending, apply the `assistant_email_attempts` migration, deploy `send-assistant-email` with JWT verification, and set these Supabase Edge Function secrets:
+
+- `ROTOLO_EMAIL_FROM` is the authorized Gmail sender. It must match the verified email of an active owner or admin account in Rotolo.
+- `ROTOLO_EMAIL_GOOGLE_CLIENT_ID`, `ROTOLO_EMAIL_GOOGLE_CLIENT_SECRET`, and `ROTOLO_EMAIL_GOOGLE_REFRESH_TOKEN` come from an approved Google OAuth connection with the `gmail.send` scope. Keep these server-side.
+
+Email sending has its own connection. The Gmail report connection continues to collect attorney correspondence.
 
 ## Test
 

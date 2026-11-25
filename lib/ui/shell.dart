@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../models/app_user.dart';
-import '../models/report.dart';
 import '../state/providers.dart';
 import '../state/view_models.dart';
 import 'theme.dart';
@@ -16,16 +14,10 @@ class NavDest {
   final IconData activeIcon;
 }
 
-/// Bottom-bar destinations for a user. Tabs for sources the user cannot read are
-/// not shown at all (server RLS is still the real gate).
-List<NavDest> destinationsFor(AppUser user) => [
-  const NavDest(0, 'Ask', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
-  const NavDest(1, 'Home', Icons.home_outlined, Icons.home_rounded),
-  const NavDest(2, 'Reports', Icons.summarize_outlined, Icons.summarize_rounded),
-  if (user.canSeePayments || user.canRead(SectionSource.doorloopRent))
-    const NavDest(3, 'Payments', Icons.payments_outlined, Icons.payments_rounded),
-  if (user.canRead(SectionSource.doorloopTasks)) const NavDest(4, 'Tasks', Icons.build_outlined, Icons.build_rounded),
-  const NavDest(5, 'More', Icons.menu_rounded, Icons.menu_rounded),
+const destinations = [
+  NavDest(0, 'Assistant', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
+  NavDest(2, 'Reports', Icons.summarize_outlined, Icons.summarize_rounded),
+  NavDest(5, 'More', Icons.menu_rounded, Icons.menu_rounded),
 ];
 
 class AppShell extends ConsumerWidget {
@@ -37,7 +29,6 @@ class AppShell extends ConsumerWidget {
     final user = ref.watch(sessionProvider);
     if (user == null) return const SizedBox.shrink();
     final t = context.t;
-    final dests = destinationsFor(user);
     return Scaffold(
       backgroundColor: t.bg,
       body: Column(
@@ -50,8 +41,8 @@ class AppShell extends ConsumerWidget {
         ],
       ),
       bottomNavigationBar: NavBar(
-        destinations: dests,
-        current: shell.currentIndex,
+        destinations: destinations,
+        current: shell.currentIndex == 0 || shell.currentIndex == 2 ? shell.currentIndex : 5,
         onTap: (branch) => shell.goBranch(branch, initialLocation: branch == shell.currentIndex),
       ),
     );

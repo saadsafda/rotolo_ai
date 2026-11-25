@@ -1,8 +1,8 @@
 // Read-only tools for the "Ask your portfolio" assistant.
 //
 // Every figure the user sees is computed here from the stored report (contract
-// v1.0) with integer cents. The language model only chooses tools and writes a
-// short sentence; the UI cards (metrics, bars, lists, drafts) and sources are
+// v1.0) with integer cents. The language model only chooses tools. The reply
+// data, UI cards (metrics, bars, lists, drafts), and sources are
 // built here, so they never contain model-made numbers. Nothing here writes,
 // sends or posts anything.
 
@@ -16,7 +16,7 @@ export type Block =
 export type Source = { kind: "ledger" | "lease" | "deal" | "email" | "tasks" | "time" | "payments" | "report"; title: string; subtitle: string; route?: string };
 export type ToolResult = { data: unknown; blocks: Block[]; sources: Source[]; amounts: string[]; suggestions: string[] };
 
-export type Section = { source: string; status: string; collected_at: string | null; cutoff: any; warnings: any[]; payload: any };
+export type Section = { source: string; status: string; collected_at: string | null; cutoff: any; coverage?: Record<string, unknown>; warnings: any[]; payload: any };
 export type Ctx = {
   report: { id: string; business_date: string; generated_at: string; data_mode: string; status: string } | null;
   sections: Record<string, Section>;
@@ -92,6 +92,11 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
     return unavailable("Overdue balances for these leases");
   }
   const total = late.reduce((s, l) => s + (l.api_balance.overdue_minor ?? 0), 0);
+  const overdue = late.length === 1 ? "1 lease has" : `${late.length} leases have`;
+  const answer = late.length
+    ? `${overdue} overdue rent, totaling ${money(total)} in DoorLoop.`
+    : "DoorLoop shows no overdue rent for the leases it reported.";
+  const missingNote = missing ? ` DoorLoop did not report a balance for ${missing} ${missing === 1 ? "lease" : "leases"}.` : "";
   const top = late.slice(0, 6);
   const max = top.length ? top[0].api_balance.overdue_minor! : 0;
   const amounts = [money(total), ...late.map((l) => money(l.api_balance.overdue_minor!)), ...top.map((l) => compact(l.api_balance.overdue_minor!))];
@@ -100,9 +105,9 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
       caption: `Across ${late.length} of ${scope.length} leases · DoorLoop balance fields${missing ? ` · ${missing} not returned` : ""}` },
   ];
   if (top.length > 1) {
-    blocks.push({ type: "bars", bars: top.map((l) => ({
+    blocks.push({ type: "bars", title: "Largest overdue balances", bars: top.map((l) => ({
       label: l.unit ? `${l.unit} · ${l.property_name.split(" ").slice(0, 2).join(" ")}` : l.property_name.split(" ").slice(0, 3).join(" "),
-      value: l.api_balance.overdue_minor!, display: compact(l.api_balance.overdue_minor!), highlight: l.api_balance.overdue_minor === max })) });
+      value: l.api_balance.overdue_minor!, display: money(l.api_balance.overdue_minor!), highlight: l.api_balance.overdue_minor === max })) });
   }
   if (late.length) {
     blocks.push({ type: "list", title: "Leases with an overdue balance", items: late.slice(0, 12).map((l) => ({
@@ -111,7 +116,7 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
       route: "/payments/balance/" + l.lease_id })) });
   }
   return {
-    data: { as_of: rent.collected_at, total_overdue: money(total), leases_overdue: late.length, leases_in_scope: scope.length,
+    data: { answer: answer + missingNote, as_of: rent.collected_at, total_overdue: money(total), leases_overdue: late.length, leases_in_scope: scope.length,
       balance_fields_missing: missing,
       leases: late.slice(0, 12).map((l) => ({ tenant: tenantName(l), lease: leaseLabel(l), overdue: money(l.api_balance.overdue_minor!), status: l.status })),
       note: "Balances are DoorLoop lease fields, not a reconciled ledger. Verify before contacting a tenant." },
@@ -192,7 +197,8 @@ function draftReminder(ctx: Ctx, args: { query: string }): ToolResult {
 function dealViews(ctx: Ctx) {
   const fub = section(ctx, "fub_deals");
   if (!fub) return null;
-  const ev = section(ctx, "email_evidence")?.payload;
+  const email = section(ctx, "email_evidence");
+  const ev = email?.payload?.mailbox_verified === true ? email.payload : null;
   const status = new Map<number, any>((ev?.deal_status ?? []).map((s: any) => [s.deal_id, s]));
   const items: any[] = ev?.items ?? [];
   return { fub, deals: (fub.payload?.deals ?? []).map((d: any) => {
@@ -232,7 +238,8 @@ function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
   if (!v) return unavailable("Follow Up Boss deals");
   const d = v.deals.find((x: any) => matches([x.property, x.pipeline], args.query ?? ""));
   if (!d) return { data: { matches: 0, query: args.query }, blocks: [], sources: [], amounts: [], suggestions: ["Show open deals"] };
-  const ev = section(ctx, "email_evidence");
+  const email = section(ctx, "email_evidence");
+  const ev = email?.payload?.mailbox_verified === true ? email : null;
   const st = (ev?.payload?.deal_status ?? []).find((s: any) => s.deal_id === d.deal_id);
   const ids = new Set([st?.latest_message_id, st?.verified_reply_message_id].filter(Boolean));
   const emails = (ev?.payload?.items ?? []).filter((m: any) => m.deal_id === d.deal_id || ids.has(m.message_id));
@@ -254,6 +261,31 @@ function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
     blocks, amounts: [],
     sources: [{ kind: "deal", title: "Deal — " + d.property, subtitle: d.pipeline + " · Follow Up Boss", route: "/more/deals/" + d.deal_id },
       ...(emails.length && ev ? [reportSource(ctx, ev, "email", "Harry's attorney email evidence", "Gmail")] : [])],
+    suggestions: ["Which deals need evidence review?"],
+  };
+}
+
+function emailEvidence(ctx: Ctx): ToolResult {
+  const email = section(ctx, "email_evidence");
+  if (!email || email.payload?.mailbox_verified !== true) return unavailable("Verified Gmail attorney evidence");
+  const coverage = email.coverage ?? {};
+  const verifiedReplies = (email.payload.deal_status ?? []).filter((deal: any) => deal.status === "ATTORNEY_REPLY_VERIFIED").length;
+  const matched = typeof coverage.matched === "number" ? coverage.matched : "Not reported";
+  const unmatched = typeof coverage.unmatched === "number" ? coverage.unmatched : "Not reported";
+  const complete = email.status === "complete" && coverage.next_page_pending !== true;
+  const note = complete ? "The report completed its 90-day attorney search."
+    : coverage.next_page_pending === true ? "Gmail had more results than this report collected."
+    : "The report has partial Gmail coverage.";
+  return {
+    data: { answer: `The latest report found verified attorney replies for ${verifiedReplies} ${verifiedReplies === 1 ? "deal" : "deals"} in Harry’s Gmail. ${note}` },
+    blocks: [{ type: "list", title: "Harry’s Gmail · 90-day attorney search", items: [
+      { title: "Deals with verified attorney replies", trailing: String(verifiedReplies) },
+      { title: "Matched correspondence", trailing: String(matched) },
+      { title: "Unmatched correspondence", trailing: String(unmatched) },
+      { title: "Search coverage", trailing: complete ? "Complete" : "Partial", tone: complete ? "ok" : "wa" },
+    ] }],
+    sources: [reportSource(ctx, email, "email", "Harry’s attorney email evidence", "Gmail")],
+    amounts: [],
     suggestions: ["Which deals need evidence review?"],
   };
 }
@@ -284,20 +316,52 @@ function listTasks(ctx: Ctx, args: { filter?: string; property?: string }): Tool
   };
 }
 
-function teamHours(ctx: Ctx): ToolResult {
+function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
   const s = section(ctx, "time_doctor");
-  if (!s) return unavailable("Time Doctor activity");
+  if (!s) return { ...unavailable("Time Doctor activity"), data: { answer: "Time Doctor hours are unavailable in the latest report." } };
   const users: any[] = s.payload?.users ?? [];
   const missing: any[] = s.payload?.scope?.missing ?? [];
+  const workDate = s.payload?.work_date ?? "the report’s work date";
+  const h = (sec: number) => (sec / 3600).toFixed(1) + " h";
+  const sources = [reportSource(ctx, s, "time", "Time Doctor daily activity", "Team")];
+  if (args.user?.trim()) {
+    const words = norm(args.user).split(" ").filter(Boolean);
+    const staff = [...users, ...missing].filter((u) => words.length &&
+      words.every((word) => norm(u.name).split(" ").includes(word)));
+    if (staff.length !== 1) {
+      return { data: { answer: staff.length ? "Several staff match. Which full name should I look up?"
+        : `I couldn’t find that staff member in this report’s Time Doctor scope for ${workDate}.` },
+      blocks: [], sources, amounts: [], suggestions: ["Show team hours"] };
+    }
+    const user = staff[0];
+    const metrics = [
+      { title: "Tracked", seconds: user.tracked_sec },
+      { title: "Active", seconds: user.active_sec },
+      { title: "Idle", seconds: user.idle_sec },
+    ];
+    const tracked = typeof user.tracked_sec === "number" ? h(user.tracked_sec) : null;
+    return {
+      data: { answer: tracked == null ? `Time Doctor didn’t return tracked hours for ${user.name} on ${workDate}.`
+        : user.tracked_sec === 0 ? `Time Doctor recorded no activity for ${user.name} on ${workDate}.`
+        : `${user.name} tracked ${tracked} on ${workDate}.` },
+      blocks: [{ type: "list", title: `${user.name} · ${workDate}`, items: metrics.map((m) => ({
+        title: m.title, trailing: typeof m.seconds === "number" ? h(m.seconds) : "Not returned",
+      })) }],
+      sources, amounts: [], suggestions: ["Show team hours"],
+    };
+  }
   const reported = users.filter((u) => typeof u.tracked_sec === "number");
   const team = s.payload?.team_total?.tracked_sec;
   const total = typeof team === "number" ? team :
     (reported.length > 0 && reported.length === users.length ? reported.reduce((a, u) => a + u.tracked_sec, 0) : null);
   const noActivity = s.payload?.activity_status === "no_activity";
   const configured = s.payload?.scope?.intended?.length || users.length + missing.length;
-  const h = (sec: number) => (sec / 3600).toFixed(1) + " h";
+  const coverage = reported.length < configured ? ` The report includes hours for ${reported.length} of ${configured} team members.` : "";
+  const answer = noActivity ? `Time Doctor recorded no tracked time on ${workDate}.`
+    : total == null ? `Time Doctor did not return a team total for ${workDate}.`
+    : `Time Doctor recorded ${(total / 3600).toFixed(1)} hours for the team on ${workDate}.`;
   return {
-    data: { work_date: s.payload?.work_date, total_tracked: total == null ? null : h(total), activity_status: noActivity ? "no_activity" : undefined, users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
+    data: { answer: answer + coverage, work_date: s.payload?.work_date, total_tracked: total == null ? null : h(total), activity_status: noActivity ? "no_activity" : undefined, users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
       active: u.active_sec == null ? null : h(u.active_sec), idle: u.idle_sec == null ? null : h(u.idle_sec) })),
       missing: missing.map((m) => m.name + " (" + m.reason + ")"), note: "Untracked gaps are not evidence of non-work." },
     blocks: [
@@ -305,10 +369,10 @@ function teamHours(ctx: Ctx): ToolResult {
         caption: `${reported.length} of ${configured} users covered`,
         chip: s.status !== "complete" || reported.length < configured
           ? { text: "Partial", tone: "wa" } : { text: "Complete", tone: "ok" } },
-      ...(reported.length > 1 ? [{ type: "bars" as const, bars: reported.map((u) => ({ label: String(u.name).split(" ").slice(-2).join(" "),
+      ...(reported.length > 1 ? [{ type: "bars" as const, title: "Hours by team member", bars: reported.map((u) => ({ label: String(u.name),
         value: u.tracked_sec, display: h(u.tracked_sec) })) }] : []),
     ],
-    sources: [reportSource(ctx, s, "time", "Time Doctor daily activity", "Team")], amounts: [],
+    sources, amounts: [],
     suggestions: [],
   };
 }
@@ -362,7 +426,9 @@ export const TOOL_SPECS = [
     parameters: { type: "object", properties: { query: { type: "string", description: "Property address or name" } }, required: ["query"], additionalProperties: false } },
   { name: "list_tasks", description: "DoorLoop maintenance tasks by filter.",
     parameters: { type: "object", properties: { filter: { type: "string", enum: ["overdue", "open", "claimed", "all"] }, property: { type: "string" } }, additionalProperties: false } },
-  { name: "get_team_hours", description: "Time Doctor tracked, active and idle hours for the previous workday.",
+  { name: "get_team_hours", description: "Time Doctor tracked, active and idle hours and coverage for the work date in the latest report. Supply a staff name when asked about one person.",
+    parameters: { type: "object", properties: { user: { type: "string", description: "Optional staff name from the question" } }, additionalProperties: false } },
+  { name: "get_email_evidence", description: "Harry's Gmail attorney correspondence coverage, matched messages and verified replies in the latest report. Use get_deal for correspondence about a named property.",
     parameters: { type: "object", properties: {}, additionalProperties: false } },
   { name: "list_outside_payments", description: "Outside payment requests submitted in the app (Zelle, check, cash…).",
     parameters: { type: "object", properties: { status: { type: "string", enum: ["needs_action", "all"] } }, additionalProperties: false } },
@@ -378,7 +444,8 @@ export function runTool(name: string, args: any, ctx: Ctx): ToolResult {
     case "list_deals": return listDeals(ctx, args ?? {});
     case "get_deal": return dealDetails(ctx, args ?? {});
     case "list_tasks": return listTasks(ctx, args ?? {});
-    case "get_team_hours": return teamHours(ctx);
+    case "get_team_hours": return teamHours(ctx, args ?? {});
+    case "get_email_evidence": return emailEvidence(ctx);
     case "list_outside_payments": return outsidePayments(ctx, args ?? {});
     case "get_report_status": return reportStatus(ctx);
     default: return { data: { error: "unknown tool " + name }, blocks: [], sources: [], amounts: [], suggestions: [] };

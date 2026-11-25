@@ -6,15 +6,16 @@ import 'package:intl/intl.dart';
 import '../../core/time_format.dart';
 import '../../models/app_user.dart';
 import '../../models/assistant.dart';
+import '../../models/assistant_email.dart';
 import '../../models/report.dart';
-import '../../state/app_state.dart';
 import '../../state/assistant_state.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
 import '../widgets/brand.dart';
 import '../widgets/kit.dart';
+import 'assistant_email_sheet.dart';
 
-/// "Ask your portfolio": the first screen after sign-in.
+/// The first screen after sign-in.
 class AssistantScreen extends ConsumerStatefulWidget {
   const AssistantScreen({super.key});
   @override
@@ -41,11 +42,49 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       });
 
   Future<void> _send(String uid, String text) async {
-    if (text.trim().isEmpty) return;
+    final threads = ref.read(assistantThreadsProvider.notifier);
+    if (text.trim().isEmpty || threads.isBusy(uid)) return;
+    final email = EmailRequest.fromPrompt(text);
+    if (email != null) {
+      final user = ref.read(sessionProvider);
+      if (user == null || user.id != uid || !user.isOwnerOrAdmin) {
+        showToast(context, 'This account cannot send email.');
+        return;
+      }
+      _input.clear();
+      await _openEmail(user, email);
+      return;
+    }
     _input.clear();
+    _focus.unfocus();
     _toBottom();
     await ref.read(assistantThreadsProvider.notifier).send(uid, text);
     _toBottom();
+  }
+
+  Future<void> _openEmail(AppUser user, EmailRequest request) async {
+    _focus.unfocus();
+    final repo = ref.read(repositoryProvider);
+    final receipt = await showModalBottomSheet<AssistantEmailReceipt>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
+      builder: (_) => AssistantEmailSheet(
+        request: request,
+        from: user.email,
+        demo: repo.isSynthetic,
+        onSend: (email, id) {
+          if (ref.read(sessionProvider)?.id != user.id) {
+            throw const AssistantFailure('Please sign in again before sending.');
+          }
+          return repo.sendAssistantEmail(email, requestId: id);
+        },
+      ),
+    );
+    if (receipt != null && mounted && ref.read(sessionProvider)?.id == user.id) {
+      ref.read(assistantThreadsProvider.notifier).addEmailReceipt(user.id, receipt.message);
+    }
   }
 
   @override
@@ -54,17 +93,22 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final thread = ref.watch(assistantThreadsProvider)[user.id] ?? const <ChatEntry>[];
     final busy = thread.any((e) => e.pending);
     final t = context.t;
-    final last = thread.lastWhere((e) => !e.user && e.reply != null, orElse: () => ChatEntry(id: -1, user: false, text: '', at: DateTime(0)));
-    final suggestions = (last.reply?.suggestions.isNotEmpty ?? false) ? last.reply!.suggestions : defaultPrompts(user);
     ref.listen(assistantThreadsProvider, (_, _) => _toBottom());
 
     return Column(children: [
-      _Header(user: user, onAsk: (q) => _send(user.id, q), onNewChat: () => ref.read(assistantThreadsProvider.notifier).clear(user.id)),
+      _Header(
+        onNewChat: thread.isEmpty || busy ? null : () => ref.read(assistantThreadsProvider.notifier).clear(user.id),
+        onEmail: user.isOwnerOrAdmin && thread.isNotEmpty && !busy ? () => _openEmail(user, const EmailRequest()) : null,
+      ),
       Expanded(
         child: Container(
           color: t.bg,
           child: thread.isEmpty
-              ? _Welcome(user: user, onAsk: (q) => _send(user.id, q))
+              ? _Welcome(
+                  user: user,
+                  onAsk: (q) => _send(user.id, q),
+                  onEmail: user.isOwnerOrAdmin ? () => _openEmail(user, const EmailRequest()) : null,
+                )
               : ListView.builder(
                   controller: _scroll,
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
@@ -79,7 +123,6 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                           : _AssistantMessage(
                               entry: e,
                               onRetry: () => ref.read(assistantThreadsProvider.notifier).retry(user.id, e.id),
-                              onFeedback: (v) => ref.read(assistantThreadsProvider.notifier).setFeedback(user.id, e.id, v),
                             ),
                     );
                   },
@@ -88,153 +131,93 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       ),
       Container(
         color: t.bg,
-        padding: const EdgeInsets.fromLTRB(0, 6, 0, 10),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          SizedBox(
-            height: 44,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: suggestions.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 8),
-              itemBuilder: (_, i) => _SuggestionChip(text: suggestions[i], onTap: busy ? null : () => _send(user.id, suggestions[i])),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: _Composer(controller: _input, focus: _focus, busy: busy, onSend: () => _send(user.id, _input.text)),
-          ),
-        ]),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+        child: _Composer(controller: _input, focus: _focus, busy: busy, onSend: () => _send(user.id, _input.text)),
       ),
     ]);
   }
 }
 
-List<String> defaultPrompts(AppUser user) => [
-      if (user.canRead(SectionSource.doorloopRent)) 'Which tenants are late on rent?',
-      if (user.canRead(SectionSource.fubDeals)) 'Which deals need evidence review?',
-      if (user.canRead(SectionSource.doorloopTasks)) 'What maintenance is overdue?',
-      if (user.canRead(SectionSource.fubDeals)) 'Which deals close in the next two weeks?',
-      if (user.canRead(SectionSource.timeDoctor)) 'How many hours did the team track yesterday?',
-      if (user.canSeePayments) 'Any outside payments waiting for review?',
-      'Is the latest report complete?',
-    ];
-
-// ───────── header ─────────
-
-class _Header extends ConsumerWidget {
-  const _Header({required this.user, required this.onAsk, required this.onNewChat});
-  final AppUser user;
-  final ValueChanged<String> onAsk;
-  final VoidCallback onNewChat;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final t = context.t;
-    final snap = ref.watch(snapshotProvider).value;
-    final properties = {for (final l in snap?.rent?.leases ?? const []) l.propertyName}.length;
-    final chips = <(IconData, String, String)>[
-      if (user.canRead(SectionSource.doorloopRent))
-        (Icons.storage_rounded, properties > 0 ? '$properties properties' : 'Properties', 'Give me a rent overview across my properties'),
-      if (user.canRead(SectionSource.doorloopRent)) (Icons.description_outlined, 'Leases & rent', 'Which tenants are late on rent?'),
-      if (user.canSeePayments) (Icons.payments_outlined, 'Payments', 'Any outside payments waiting for review?'),
-      if (user.canRead(SectionSource.fubDeals)) (Icons.handshake_outlined, 'Deals', 'Which deals need evidence review?'),
-      if (user.canRead(SectionSource.doorloopTasks)) (Icons.build_outlined, 'Maintenance', 'What maintenance is overdue?'),
-    ];
-    return Container(
-      color: t.nv,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          const BrandMark(size: 44),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Ask your portfolio', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600, color: Colors.white)),
-              SizedBox(height: 2),
-              Text('GROUNDED IN YOUR DATA',
-                  style: TextStyle(fontFamily: kMono, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w500, color: NavColors.active)),
-            ]),
-          ),
-          Material(
-            color: Colors.white.withValues(alpha: .08),
-            borderRadius: BorderRadius.circular(12),
-            child: PopupMenuButton<String>(
-              tooltip: 'Options',
-              icon: const Icon(Icons.tune_rounded, color: Colors.white),
-              onSelected: (v) => v == 'new' ? onNewChat() : openRoute(context, '/more/settings'),
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'new', child: Text('New conversation')),
-                PopupMenuItem(value: 'settings', child: Text('Settings')),
-              ],
-            ),
-          ),
-        ]),
-        if (chips.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          SizedBox(
-            height: 42,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: chips.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 8),
-              itemBuilder: (_, i) => Material(
-                color: Colors.white.withValues(alpha: .08),
-                shape: const StadiumBorder(),
-                child: InkWell(
-                  customBorder: const StadiumBorder(),
-                  onTap: () => onAsk(chips[i].$3),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    child: Row(children: [
-                      Icon(chips[i].$1, size: 17, color: NavColors.active),
-                      const SizedBox(width: 6),
-                      Text(chips[i].$2,
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: NavColors.active)),
-                    ]),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ]),
-    );
-  }
-}
-
-// ───────── conversation pieces ─────────
-
-class _Welcome extends StatelessWidget {
-  const _Welcome({required this.user, required this.onAsk});
-  final AppUser user;
-  final ValueChanged<String> onAsk;
+class _Header extends StatelessWidget {
+  const _Header({this.onNewChat, this.onEmail});
+  final VoidCallback? onNewChat;
+  final VoidCallback? onEmail;
 
   @override
   Widget build(BuildContext context) {
     final t = context.t;
-    return ListView(padding: const EdgeInsets.fromLTRB(20, 28, 20, 20), children: [
-      Text('Hi ${user.firstName}, what would you like to know?',
-          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600, letterSpacing: -.2)),
-      const SizedBox(height: 8),
-      Text('Answers come from your latest synced report: DoorLoop rent and tasks, Follow Up Boss deals, '
-          'attorney emails and Time Doctor hours. Every figure links to its source.',
-          style: TextStyle(fontSize: 14, height: 1.5, color: t.mu)),
-      const SizedBox(height: 20),
-      for (final q in defaultPrompts(user).take(5))
-        Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: SurfaceCard(
-            onTap: () => onAsk(q),
-            child: Row(children: [
-              Icon(Icons.auto_awesome_outlined, size: 18, color: t.ac),
-              const SizedBox(width: 12),
-              Expanded(child: Text(q, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500))),
-              Icon(Icons.north_east_rounded, size: 18, color: t.mu),
-            ]),
+    return ColoredBox(
+      color: t.nv,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 12, 10),
+        child: Row(children: [
+          const BrandMark(size: 36),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text('Rotolo Assistant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white)),
           ),
+          if (onEmail != null)
+            IconButton(
+              tooltip: 'Write an email',
+              onPressed: onEmail,
+              icon: const Icon(Icons.mail_outline_rounded, color: Colors.white),
+            ),
+          if (onNewChat != null)
+            IconButton(
+              tooltip: 'New conversation',
+              onPressed: onNewChat,
+              icon: const Icon(Icons.add_comment_outlined, color: Colors.white),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _Welcome extends StatelessWidget {
+  const _Welcome({required this.user, required this.onAsk, this.onEmail});
+  final AppUser user;
+  final ValueChanged<String> onAsk;
+  final VoidCallback? onEmail;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.t;
+    final actions = <(IconData, String, VoidCallback)>[
+      if (user.canRead(SectionSource.doorloopRent))
+        (Icons.home_work_outlined, 'Who is behind on rent?', () => onAsk('Who is behind on rent?')),
+      if (user.canRead(SectionSource.timeDoctor))
+        (Icons.schedule_rounded, 'How many hours did the team work?', () => onAsk('Show team hours')),
+      if (user.canRead(SectionSource.fubDeals))
+        (Icons.handshake_outlined, 'Which deals are closing soon?', () => onAsk('Which deals close in the next two weeks?')),
+      if (onEmail != null)
+        (Icons.mail_outline_rounded, 'Write an email', onEmail!),
+    ];
+    return ListView(padding: const EdgeInsets.fromLTRB(20, 30, 20, 20), children: [
+      Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('Hi ${user.firstName},\nwhat would you like to know?',
+                style: const TextStyle(fontSize: 32, height: 1.15, fontWeight: FontWeight.w600, letterSpacing: -.7)),
+            const SizedBox(height: 22),
+            for (final (icon, label, open) in actions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: SurfaceCard(
+                  onTap: open,
+                  child: Row(children: [
+                    IconTile(icon, Tone.ac, size: 38),
+                    const SizedBox(width: 12),
+                    Expanded(child: Text(label, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500))),
+                    const SizedBox(width: 4),
+                    Icon(Icons.chevron_right_rounded, size: 20, color: t.mu),
+                  ]),
+                ),
+              ),
+          ]),
         ),
+      ),
     ]);
   }
 }
@@ -281,14 +264,12 @@ class _UserBubble extends StatelessWidget {
 }
 
 class _AssistantMessage extends StatelessWidget {
-  const _AssistantMessage({required this.entry, required this.onRetry, required this.onFeedback});
+  const _AssistantMessage({required this.entry, required this.onRetry});
   final ChatEntry entry;
   final VoidCallback onRetry;
-  final ValueChanged<int> onFeedback;
 
   @override
   Widget build(BuildContext context) {
-    final t = context.t;
     final reply = entry.reply;
     return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const BrandMark(size: 34),
@@ -309,33 +290,11 @@ class _AssistantMessage extends StatelessWidget {
                   )
                 : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                     Padding(padding: const EdgeInsets.only(top: 4), child: RichAnswer(text: entry.text)),
-                    if (reply != null && reply.dataMode != null && reply.dataMode != 'live') ...[
-                      const SizedBox(height: 8),
-                      const Align(alignment: Alignment.centerLeft, child: ToneChip('Demo data', Tone.wa, icon: Icons.science_outlined)),
-                    ],
                     if (reply != null) ..._blocks(reply.blocks),
-                    if (reply != null && reply.sources.isNotEmpty) ...[
-                      const SizedBox(height: 14),
-                      Row(children: [
-                        Icon(Icons.verified_outlined, size: 15, color: t.mu),
-                        const SizedBox(width: 6),
-                        Text('SOURCES · ${reply.sources.length} RECORD${reply.sources.length == 1 ? '' : 'S'}',
-                            style: TextStyle(fontFamily: kMono, fontSize: 12, letterSpacing: 1.2, color: t.mu)),
-                      ]),
-                      const SizedBox(height: 8),
-                      for (final s in reply.sources) Padding(padding: const EdgeInsets.only(bottom: 8), child: _SourceCard(source: s)),
+                    if (reply != null && (reply.sources.isNotEmpty || reply.asOf != null)) ...[
+                      const SizedBox(height: 10),
+                      _AnswerDetails(reply),
                     ],
-                    if (reply?.asOf != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Consumer(builder: (context, ref, _) {
-                          final zone = ref.watch(repositoryProvider).businessTimezone;
-                          return Text('From the report generated ${formatInstant(reply!.asOf, zone)}',
-                              style: TextStyle(fontSize: 12, color: t.mu));
-                        }),
-                      ),
-                    const SizedBox(height: 8),
-                    _Actions(entry: entry, onFeedback: onFeedback),
                   ]),
       ),
     ]);
@@ -410,8 +369,7 @@ class _Metric extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Expanded(
-          child: Text(b.label.toUpperCase(),
-              style: TextStyle(fontFamily: kMono, fontSize: 12, letterSpacing: 1.3, fontWeight: FontWeight.w500, color: t.mu)),
+          child: Text(b.label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: t.mu)),
         ),
         if (b.chipText != null) ToneChip(b.chipText!, _tone(b.chipTone)),
       ]),
@@ -436,42 +394,31 @@ class _Bars extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.t;
     final max = b.bars.fold<double>(0, (a, x) => x.value > a ? x.value : a);
-    const h = 92.0;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (b.title != null) ...[Text(b.title!, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)), const SizedBox(height: 10)],
-      SizedBox(
-        height: h + 22,
-        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          for (final x in b.bars)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-                  Text(x.display,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: x.highlight ? t.ac : t.mu, fontFeatures: tabular)),
-                  const SizedBox(height: 4),
-                  Container(
-                    height: max <= 0 ? 4 : (x.value / max * h).clamp(4, h),
-                    decoration: BoxDecoration(color: x.highlight ? t.ac : t.acs, borderRadius: BorderRadius.circular(4)),
-                  ),
-                ]),
+      Text(b.title ?? 'Breakdown', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+      for (final x in b.bars)
+        Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              Expanded(child: Text(x.label, style: const TextStyle(fontSize: 13))),
+              const SizedBox(width: 8),
+              Text(x.display, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, fontFeatures: tabular)),
+            ]),
+            const SizedBox(height: 5),
+            ExcludeSemantics(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: LinearProgressIndicator(
+                  value: max > 0 ? (x.value / max).clamp(0, 1).toDouble() : 0,
+                  minHeight: 7,
+                  color: t.ac,
+                  backgroundColor: t.acs,
+                ),
               ),
             ),
-        ]),
-      ),
-      const SizedBox(height: 8),
-      Row(children: [
-        for (final x in b.bars)
-          Expanded(
-            child: Text(x.label,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontFamily: kMono, fontSize: 11, color: t.mu)),
-          ),
-      ]),
+          ]),
+        ),
     ]);
   }
 }
@@ -600,38 +547,30 @@ class _SourceCard extends StatelessWidget {
   }
 }
 
-class _Actions extends StatelessWidget {
-  const _Actions({required this.entry, required this.onFeedback});
-  final ChatEntry entry;
-  final ValueChanged<int> onFeedback;
+class _AnswerDetails extends ConsumerWidget {
+  const _AnswerDetails(this.reply);
+  final AssistantReply reply;
 
   @override
-  Widget build(BuildContext context) {
-    final t = context.t;
-    Widget btn(IconData icon, String tip, VoidCallback? onTap, {bool on = false}) => Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: Material(
-            color: on ? t.acs : t.sf,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: on ? t.ac : t.bd)),
-            child: InkWell(
-              customBorder: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              onTap: onTap,
-              child: Tooltip(message: tip, child: SizedBox(width: 40, height: 40, child: Icon(icon, size: 19, color: on ? t.ac : t.mu))),
-            ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final zone = ref.watch(repositoryProvider).businessTimezone;
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 8),
+      title: const Text('Where this came from', style: TextStyle(fontSize: 14)),
+      collapsedShape: const Border(),
+      shape: const Border(),
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (reply.asOf != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Report from ${formatInstant(reply.asOf, zone)}', style: const TextStyle(fontSize: 13)),
           ),
-        );
-    final route = entry.reply?.sources.where((s) => s.route != null).firstOrNull?.route;
-    return Row(children: [
-      btn(entry.feedback == 1 ? Icons.thumb_up_rounded : Icons.thumb_up_outlined, 'Helpful', () => onFeedback(1), on: entry.feedback == 1),
-      btn(entry.feedback == -1 ? Icons.thumb_down_rounded : Icons.thumb_down_outlined, 'Not helpful', () => onFeedback(-1),
-          on: entry.feedback == -1),
-      const Spacer(),
-      btn(Icons.copy_rounded, 'Copy answer', () {
-        Clipboard.setData(ClipboardData(text: entry.text));
-        showToast(context, 'Answer copied.');
-      }),
-      if (route != null) btn(Icons.open_in_new_rounded, 'Open record', () => openRoute(context, route)),
-    ]);
+        for (final source in reply.sources)
+          Padding(padding: const EdgeInsets.only(bottom: 8), child: _SourceCard(source: source)),
+      ],
+    );
   }
 }
 
@@ -675,32 +614,6 @@ class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderState
           child: Text('Checking your records…', overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: t.mu)),
         ),
       ]),
-    );
-  }
-}
-
-class _SuggestionChip extends StatelessWidget {
-  const _SuggestionChip({required this.text, required this.onTap});
-  final String text;
-  final VoidCallback? onTap;
-  @override
-  Widget build(BuildContext context) {
-    final t = context.t;
-    return Material(
-      color: t.sf,
-      shape: StadiumBorder(side: BorderSide(color: t.bd)),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(children: [
-            Icon(Icons.auto_awesome_outlined, size: 16, color: t.ac),
-            const SizedBox(width: 6),
-            Text(text, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: onTap == null ? t.mu : t.tx)),
-          ]),
-        ),
-      ),
     );
   }
 }
@@ -755,7 +668,7 @@ class _ComposerState extends State<_Composer> {
             onSubmitted: (_) => canSend ? widget.onSend() : null,
             style: const TextStyle(fontSize: 15.5),
             decoration: InputDecoration(
-              hintText: 'Ask about rent, deals, leases…',
+              hintText: 'Ask a question or write an email…',
               counterText: '',
               filled: false,
               border: InputBorder.none,
@@ -780,7 +693,7 @@ class _ComposerState extends State<_Composer> {
             ),
             child: widget.busy
                 ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: t.mu))
-                : const Icon(Icons.arrow_upward_rounded, size: 24),
+                : const Icon(Icons.arrow_upward_rounded, size: 24, semanticLabel: 'Send message'),
           ),
         ),
       ]),

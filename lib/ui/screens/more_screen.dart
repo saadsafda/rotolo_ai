@@ -25,6 +25,11 @@ class MoreScreen extends ConsumerWidget {
             .where((h) => h.status.$2 != Tone.ok)
             .length;
     final items = [
+      (Icons.dashboard_outlined, 'Overview', 'See what needs your attention', '/home'),
+      if (user.canSeePayments || user.canRead(SectionSource.doorloopRent))
+        (Icons.payments_outlined, 'Payments', 'Check rent balances and review payments', '/payments'),
+      if (user.canRead(SectionSource.doorloopTasks))
+        (Icons.build_outlined, 'Maintenance', 'See open and overdue work', '/tasks'),
       if (user.canRead(SectionSource.fubDeals))
         (
           Icons.handshake_outlined,
@@ -43,7 +48,7 @@ class MoreScreen extends ConsumerWidget {
       if (user.isOwnerOrAdmin)
         (
           Icons.hub_outlined,
-          'Integrations',
+          'Connections',
           attentionSources == 0 ? 'All sources connected' : '$attentionSources source${attentionSources == 1 ? '' : 's'} need attention',
           '/more/integrations'
         ),

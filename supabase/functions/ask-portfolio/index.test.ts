@@ -89,3 +89,32 @@ Deno.test("staff (deals only): rent tool reports unavailable, no rent cards", as
   assert(body.blocks.length === 0, "no rent cards for staff");
   assert(body.answer.includes("not available"), "assistant tells the user the data is unavailable");
 });
+
+Deno.test("the latest question gets a distinct result even without a model tool call", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([{ role: "assistant", content: "No tool" }, { role: "assistant", content: "No tool" }], seen);
+  const rent = await (await handle(ask("Who is behind on rent?"), env(), http)).json();
+  const followUp = new Request("https://fn.test/ask-portfolio", {
+    method: "POST",
+    headers: { authorization: "Bearer user-jwt" },
+    body: JSON.stringify({ messages: [
+      { role: "user", text: "Who is behind on rent?" },
+      { role: "assistant", text: rent.answer },
+      { role: "user", text: "Show open deals" },
+    ] }),
+  });
+  const deals = await (await handle(followUp, env(), http)).json();
+  assert(rent.answer.includes("$3,125.50"), "rent figures available without a model tool call");
+  assert(deals.answer.includes("Open deals") && !deals.answer.includes("$3,125.50"), "new topic answered independently");
+  assert(!JSON.stringify(seen.openai).includes("$3,125.50"), "prior private replies stay in Supabase");
+  assert(seen.openai[1].messages.at(-1).content === "Show open deals", "latest question sent last");
+});
+
+Deno.test("Gmail coverage and a missing staff member get distinct, scoped answers", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("get_email_evidence"), call("get_team_hours", { user: "Charlie" })], seen);
+  const gmail = await (await handle(ask("How complete is Gmail?"), env(), http)).json();
+  const time = await (await handle(ask("How many hours did Charlie track?"), env(), http)).json();
+  assert(gmail.sources[0].kind === "email" && gmail.answer.includes("more results"), "partial Gmail coverage is explicit");
+  assert(time.sources[0].kind === "time" && time.answer.includes("didn’t return tracked hours"), "named missing staff does not get the team total");
+});

@@ -18,23 +18,58 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
 
-const SYSTEM = `Choose the read-only tools that answer the user's portfolio question. Use the wording of the user messages to supply tool arguments. If an entity is unclear, ask for a property, unit, or lease reference. If the question is outside rent, leases, deals, maintenance, team hours, payment requests, or report freshness, choose no tool. Records are processed by the app after your choice.`;
+const SYSTEM = `Choose read-only tools for the final user message. Use earlier questions only to resolve a reference in a follow-up. Do not look up an earlier topic if the final message asks about a new one. Use named people, properties, and filters from the question as tool arguments. When a lookup requires a missing person or property reference, choose no tool. Topics include rent, leases, deals, Harry's attorney email evidence, maintenance, Time Doctor, payment requests, and report status. Do not select a tool for an unrelated question.`;
 
 const HELP = "I can help with rent, leases, deals, maintenance, team hours, outside payments, and report freshness.";
 
 function describeResult(result: ToolResult): string {
-  const data = result.data as { available?: boolean; matches?: number; drafted?: boolean; reason?: string };
+  const data = result.data as { available?: boolean; matches?: number; drafted?: boolean; reason?: string; answer?: string; property?: string; stage?: string; projected_close?: string };
   if (data?.matches != null && data.matches > 1) return "Several leases match. Choose a lease below or enter its exact reference.";
   if (data?.available === false) return data.reason ?? "That information is unavailable in the latest report.";
   if (data?.matches === 0) return "No matching record was found in the latest report.";
   if (data?.drafted === false) return "A reminder could not be drafted. Check the lease and its latest balance.";
+  if (data?.answer) return data.answer;
+  if (data?.property && data.stage) {
+    return `${data.property} is in ${data.stage} in Follow Up Boss. ${data.projected_close ? `The projected close date is ${data.projected_close}.` : "No projected close date is set."}`;
+  }
   const first = result.blocks[0];
-  if (first?.type === "metric") return `${first.label} — ${first.value}.`;
+  if (first?.type === "metric") return `${first.label} — ${first.value}.${first.caption ? ` ${first.caption}.` : ""}`;
   if (first?.type === "draft") return "Your reminder draft is ready to review.";
-  return first ? "Here are the matching records." : HELP;
+  if (first?.type === "list") return `${first.title}.`;
+  return "The latest report has no details for this lookup.";
 }
 
 type Msg = { role: "user" | "assistant"; text: string };
+
+function fallback(question: string, ctx: Ctx): { results: ToolResult[]; answer?: string } {
+  const text = question.trim().toLowerCase().replace(/[?!.]+$/, "");
+  const lookup = (name: string, args: Record<string, string> = {}) => ({ results: [runTool(name, args, ctx)] });
+  if (/^(hi|hello|hey|good morning|good afternoon)$/.test(text)) {
+    return { results: [], answer: "Hi! Try asking who is behind on rent, which deals are closing soon, or whether Gmail and Time Doctor are up to date." };
+  }
+  if (/\b(remind|reminder|payment history|lease details)\b/.test(text)) {
+    return { results: [], answer: "Which tenant, property and unit, or lease reference should I use?" };
+  }
+  if (/^(?:show (?:me )?)?(?:gmail|email evidence|attorney emails?|gmail status)$/.test(text)) return lookup("get_email_evidence");
+  if (/^(?:show (?:me )?)?(?:time doctor|timedoctor|time doctor status|team hours|tracked hours)$/.test(text)) return lookup("get_team_hours");
+  if (/^(?:show (?:me )?)?door\s?loop(?: overview)?$/.test(text)) {
+    return { results: [runTool("get_overdue_rent", {}, ctx), runTool("list_tasks", { filter: "overdue" }, ctx)] };
+  }
+  if (/^(?:who is behind on rent|who owes rent|how much rent is overdue|show overdue rent)$/.test(text)) return lookup("get_overdue_rent");
+  if (/^(?:(?:show )?(?:open deals|deals closing soon|closing soon|overdue maintenance|outside payments|report status)|which deals close in the next two weeks)$/.test(text)) {
+    if (text.includes("maintenance")) return lookup("list_tasks", { filter: "overdue" });
+    if (text.includes("payments")) return lookup("list_outside_payments");
+    if (text.includes("report")) return lookup("get_report_status");
+    return lookup("list_deals", { filter: /soon|two weeks/.test(text) ? "closing_soon" : "open" });
+  }
+  if (/\b(gmail|email|attorney)\b/.test(text)) {
+    return { results: [], answer: "Do you want the latest Gmail coverage, or attorney correspondence for a particular property?" };
+  }
+  if (/\b(time doctor|hours|tracked|activity)\b/.test(text)) {
+    return { results: [], answer: "Do you want team hours or a particular staff member’s hours from the latest Time Doctor report?" };
+  }
+  return { results: [], answer: HELP };
+}
 
 async function rest(http: typeof fetch, url: string, path: string, apikey: string, auth: string) {
   const r = await http(url + "/rest/v1/" + path, { headers: { apikey, authorization: auth }, signal: AbortSignal.timeout(15_000) });
@@ -44,7 +79,7 @@ async function rest(http: typeof fetch, url: string, path: string, apikey: strin
 
 async function loadContext(http: typeof fetch, url: string, apikey: string, auth: string): Promise<Ctx> {
   const [reports, payments, tasks, evidence, config] = await Promise.all([
-    rest(http, url, "reports?select=id,business_date,generated_at,data_mode,status,report_sections(source,status,collected_at,cutoff,warnings,payload)&data_mode=eq.live&order=generated_at.desc&limit=1", apikey, auth),
+    rest(http, url, "reports?select=id,business_date,generated_at,data_mode,status,report_sections(source,status,collected_at,cutoff,coverage,warnings,payload)&data_mode=eq.live&order=generated_at.desc&limit=1", apikey, auth),
     rest(http, url, "payment_submissions?select=id,lease_id,amount_minor,payment_date,method,method_detail,status,property_name,unit,tenant_name,created_at&order=created_at.desc&limit=50", apikey, auth),
     rest(http, url, "task_reviews?select=task_id,review_status", apikey, auth),
     rest(http, url, "deal_evidence_reviews?select=deal_id", apikey, auth),
@@ -103,7 +138,9 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
     return json({ answer: "There is no report stored yet. Generate a report first, then ask again.", blocks: [], sources: [], suggestions: [], data_mode: null, as_of: null });
   }
 
-  let results: ToolResult[];
+  const latestQuestion = messages[messages.length - 1].text;
+  let results: ToolResult[] = [];
+  let answer: string | undefined;
   try {
     const response = await http("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -118,8 +155,7 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
       }),
       signal: AbortSignal.timeout(45_000),
     });
-    if (!response.ok) return json({ error: "assistant_unavailable" }, 502);
-    const calls = (await response.json()).choices?.[0]?.message?.tool_calls ?? [];
+    const calls = response.ok ? (await response.json()).choices?.[0]?.message?.tool_calls ?? [] : [];
     const names = new Set(TOOL_SPECS.map((tool) => tool.name));
     results = calls.slice(0, 4).flatMap((call: any) => {
       if (!names.has(call.function?.name)) return [];
@@ -131,13 +167,16 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
       }
     });
   } catch {
-    return json({ error: "assistant_unavailable" }, 502);
+    // The common report lookups can still respond if the model is unavailable.
+  }
+  if (!results.length) {
+    ({ results, answer } = fallback(latestQuestion, ctx));
   }
 
   // Render the selected records inside Supabase instead of sending them back to OpenAI.
   const seen = new Set<string>();
   return json({
-    answer: results.length ? [...new Set(results.map(describeResult))].join(" ") : HELP,
+    answer: results.length ? [...new Set(results.map(describeResult))].join(" ") : answer,
     blocks: results.flatMap((r) => r.blocks).slice(0, 8),
     sources: results.flatMap((r) => r.sources).filter((source) => !seen.has(source.title) && seen.add(source.title)).slice(0, 6),
     suggestions: [...new Set(results.flatMap((r) => r.suggestions))].slice(0, 3),

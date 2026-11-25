@@ -15,7 +15,7 @@ void main() {
     final c = await pumpApp(tester);
     expect(find.text('Real Estate AI'), findsOneWidget);
     await signIn(tester, 'demo-owner');
-    expect(find.text('Ask your portfolio'), findsOneWidget); // the assistant opens first
+    expect(find.text('Rotolo Assistant'), findsOneWidget); // the assistant opens first
     await go(tester, c, '/home');
 
     expect(find.text('DEMO DATA'), findsOneWidget);
@@ -27,8 +27,11 @@ void main() {
     await tester.scrollUntilVisible(find.byKey(const ValueKey('home-report-card')), 200, scrollable: verticalScrollable());
     expect(find.text('Daily report · Wed, Nov 18'), findsOneWidget);
     expect(find.text('Partial'), findsWidgets);
-    for (final label in ['Ask', 'Home', 'Reports', 'Payments', 'Tasks', 'More']) {
+    for (final label in ['Assistant', 'Reports', 'More']) {
       expect(navItem(label), findsOneWidget);
+    }
+    for (final label in ['Home', 'Payments', 'Tasks']) {
+      expect(navItem(label), findsNothing);
     }
   });
 
@@ -54,7 +57,7 @@ void main() {
     for (final id in ['demo-owner', 'demo-admin', 'demo-staff', 'demo-owner']) {
       await signIn(tester, id);
       expect(tester.takeException(), isNull, reason: 'after signing in as $id');
-      expect(find.text('Ask your portfolio'), findsOneWidget);
+      expect(find.text('Rotolo Assistant'), findsOneWidget);
       expect(find.textContaining('what would you like to know?'), findsOneWidget);
       await go(tester, c, '/more/settings');
       await tapVisible(tester, find.byKey(const ValueKey('sign-out')));
@@ -63,7 +66,7 @@ void main() {
     }
   });
 
-  testWidgets('staff see only home, reports and more; restricted screens are gated', (tester) async {
+  testWidgets('staff see the simple navigation and restricted screens are gated', (tester) async {
     final c = await pumpApp(tester);
     await signIn(tester, 'demo-staff');
     expect(navItem('Payments'), findsNothing);

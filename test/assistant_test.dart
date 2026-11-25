@@ -5,6 +5,7 @@ import 'package:rotolo_ai_assistant/core/time_format.dart';
 import 'package:rotolo_ai_assistant/data/synthetic_repository.dart';
 import 'package:rotolo_ai_assistant/main.dart';
 import 'package:rotolo_ai_assistant/models/assistant.dart';
+import 'package:rotolo_ai_assistant/models/assistant_email.dart';
 import 'package:rotolo_ai_assistant/state/providers.dart';
 
 import 'helpers.dart';
@@ -14,6 +15,13 @@ class _FakeAssistantRepo extends SyntheticRepository {
   _FakeAssistantRepo({required super.fixtureJson, required super.currentUser, super.now, this.fail = false});
   final bool fail;
   final asked = <List<ChatTurn>>[];
+  final sentEmails = <AssistantEmail>[];
+
+  @override
+  Future<AssistantEmailReceipt> sendAssistantEmail(AssistantEmail email, {required String requestId}) async {
+    sentEmails.add(email);
+    return AssistantEmailReceipt(to: email.to, demo: true);
+  }
 
   @override
   Future<AssistantReply> ask(List<ChatTurn> conversation) async {
@@ -67,8 +75,8 @@ Future<(ProviderContainer, _FakeAssistantRepo)> _pump(WidgetTester tester, {bool
 void main() {
   testWidgets('chat opens after sign-in and renders grounded cards and sources', (tester) async {
     final (_, repo) = await _pump(tester);
-    expect(find.text('Ask your portfolio'), findsOneWidget);
-    expect(find.text('GROUNDED IN YOUR DATA'), findsOneWidget);
+    expect(find.text('Rotolo Assistant'), findsOneWidget);
+    expect(find.text('Who is behind on rent?'), findsOneWidget);
 
     await tester.enterText(find.byKey(const ValueKey('assistant-input')), 'Which tenants are late on rent?');
     await tester.pump();
@@ -80,18 +88,19 @@ void main() {
 
     expect(repo.asked.single.single.text, 'Which tenants are late on rent?');
     expect(find.textContaining('Three leases are past due'), findsOneWidget);
-    expect(find.text('OVERDUE RENT · NOV'), findsOneWidget);
+    expect(find.text('Overdue rent · Nov'), findsOneWidget);
     expect(find.text('\$3,125.50'), findsOneWidget); // metric value
     expect(find.text('\$2.1k'), findsOneWidget); // bar label
-    expect(find.text('Demo data'), findsOneWidget);
+    expect(find.text('DEMO DATA'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Copy draft'), 200, scrollable: verticalScrollable());
     expect(find.text('Not sent'), findsOneWidget);
+    await tapVisible(tester, find.text('Where this came from'));
     await tester.scrollUntilVisible(find.text('DoorLoop rent snapshot'), 200, scrollable: verticalScrollable());
-    expect(find.text('SOURCES · 2 RECORDS'), findsOneWidget);
-    expect(find.text('Draft a reminder to TEST Tenant Alpha'), findsOneWidget); // follow-up suggestion
     expect(tester.takeException(), isNull);
 
     // Tapping a source opens the record inside the app.
+    await tester.ensureVisible(find.text('DoorLoop rent snapshot'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('DoorLoop rent snapshot'));
     await tester.pumpAndSettle();
     expect(find.text('Daily report'), findsOneWidget);
@@ -134,7 +143,31 @@ void main() {
     await signIn(tester, 'demo-staff');
     expect(find.text('Which tenants are late on rent?'), findsNothing);
     expect(find.textContaining('what would you like to know?'), findsOneWidget);
-    expect(find.text('Which deals need evidence review?'), findsWidgets); // staff prompts: deals only
+    expect(find.text('Which deals are closing soon?'), findsOneWidget);
     expect(find.text('Which tenants are late on rent?'), findsNothing);
+  });
+
+  testWidgets('email asks for an exact recipient and sends only after review', (tester) async {
+    final (_, repo) = await _pump(tester);
+    await tester.enterText(find.byKey(const ValueKey('assistant-input')), 'Send an email to Mary saying The report is ready.');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('assistant-send')));
+    await tester.pumpAndSettle();
+    expect(find.text('Review email'), findsOneWidget);
+    expect(find.text('Email address for Mary'), findsOneWidget);
+    expect(find.text('The report is ready.'), findsOneWidget);
+    expect(repo.asked, isEmpty);
+    expect(repo.sentEmails, isEmpty);
+    await tester.tap(find.byKey(const ValueKey('email-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.text('Enter one email address.'), findsOneWidget);
+    expect(repo.sentEmails, isEmpty);
+    await tester.enterText(find.byKey(const ValueKey('email-recipient')), 'mary@example.com');
+    await tester.enterText(find.byKey(const ValueKey('email-subject')), 'Report ready');
+    await tester.tap(find.byKey(const ValueKey('email-confirm')));
+    await tester.pumpAndSettle();
+    expect(repo.sentEmails.single.to, 'mary@example.com');
+    expect(repo.sentEmails.single.body, 'The report is ready.');
+    expect(find.text('Demo complete. No email was sent.'), findsOneWidget);
   });
 }

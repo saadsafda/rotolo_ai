@@ -50,6 +50,10 @@ class AssistantThreads extends Notifier<Map<String, List<ChatEntry>>> {
 
   bool isBusy(String uid) => _thread(uid).any((e) => e.pending);
 
+  void addEmailReceipt(String uid, String message) {
+    _set(uid, [..._thread(uid), ChatEntry(id: ++_seq, user: false, text: message, at: ref.read(clockProvider)())]);
+  }
+
   Future<void> send(String uid, String text) async {
     final q = text.trim();
     if (q.isEmpty || isBusy(uid)) return;

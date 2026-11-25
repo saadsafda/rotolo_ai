@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_email.dart';
 import '../models/payment.dart';
 import '../models/report.dart';
 import '../models/sync_run.dart';
@@ -54,6 +55,9 @@ abstract class OpsRepository {
   /// "Ask your portfolio": grounded answer over the user's own data.
   /// Throws [AssistantFailure] with a readable message.
   Future<AssistantReply> ask(List<ChatTurn> conversation);
+
+  /// Sends one reviewed email. [requestId] is reused for an identical retry.
+  Future<AssistantEmailReceipt> sendAssistantEmail(AssistantEmail email, {required String requestId});
 }
 
 class AuthFailure implements Exception {

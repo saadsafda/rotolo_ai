@@ -5,10 +5,13 @@ import 'dart:typed_data';
 import 'package:timezone/timezone.dart' as tz;
 
 import '../core/time_format.dart';
+import '../core/money.dart';
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_email.dart';
 import '../models/json.dart';
 import '../models/payment.dart';
+import '../models/payloads.dart';
 import '../models/report.dart';
 import '../models/sync_run.dart';
 import 'ops_repository.dart';
@@ -440,9 +443,62 @@ class SyntheticRepository implements OpsRepository {
   @override
   Future<AssistantReply> ask(List<ChatTurn> conversation) async {
     _requireUser();
-    return const AssistantReply(
-      answer: 'The assistant answers from the live Supabase data. Run the app with the live configuration to use it.',
-      dataMode: 'synthetic',
-    );
+    final report = await getReport(_sortedReports.first['id'] as String);
+    final question = conversation.lastOrNull?.text.toLowerCase() ?? '';
+    final rent = report[SectionSource.doorloopRent];
+    final time = report[SectionSource.timeDoctor];
+    final deals = report[SectionSource.fubDeals];
+    late final String answer;
+    final blocks = <AssistantBlock>[];
+    final sources = <AssistantSource>[];
+    if (rent?.isAvailable == true && RegExp(r'\brent\b|\bdoorloop\b').hasMatch(question)) {
+      final leases = RentPayload(rent!.payload).leases.where((lease) => lease.hasOverdue).toList();
+      final total = leases.fold<int>(0, (sum, lease) => sum + lease.apiBalance.overdue!);
+      final value = Money(total).format();
+      answer = '${leases.length} leases have overdue rent. The total shown by DoorLoop is $value.';
+      if (leases.length > 1) {
+        blocks.add(BarsBlock(title: 'Overdue rent by property', bars: [
+          for (final lease in leases.take(6))
+            BarDatum(label: lease.propertyName, value: lease.apiBalance.overdue!.toDouble(), display: Money(lease.apiBalance.overdue!).format()),
+        ]));
+      }
+      sources.add(AssistantSource(kind: 'ledger', title: 'DoorLoop rent', subtitle: 'Sample report', route: '/reports/${report.summary.id}'));
+    } else if (time?.isAvailable == true && RegExp(r'\b(hours|time doctor|timedoctor)\b').hasMatch(question)) {
+      final staff = StaffActivityPayload(time!.payload);
+      String hours(int seconds) => '${(seconds / 3600).toStringAsFixed(1)} hours';
+      final day = staff.workDate?.toIso8601String().split('T').first ?? 'the last report date';
+      answer = staff.trackedSec == null ? 'Time Doctor did not return a total for $day.'
+          : 'Time Doctor recorded ${hours(staff.trackedSec!)} on $day.${staff.missing.isEmpty ? '' : ' Some team members are missing from this report.'}';
+      final covered = staff.users.where((user) => user.trackedSec != null).toList();
+      if (covered.length > 1) {
+        blocks.add(BarsBlock(title: 'Hours by team member', bars: [
+          for (final member in covered)
+            BarDatum(label: member.name, value: member.trackedSec!.toDouble(), display: hours(member.trackedSec!)),
+        ]));
+      }
+      sources.add(AssistantSource(kind: 'time', title: 'Time Doctor', subtitle: 'Sample report', route: '/reports/${report.summary.id}'));
+    } else if (deals?.isAvailable == true && RegExp(r'\b(deals?|closings?|close)\b').hasMatch(question)) {
+      final all = DealsPayload(deals!.payload).deals;
+      final closing = all.where((deal) =>
+          deal.classification == 'open' && deal.daysToProjectedClose != null &&
+          deal.daysToProjectedClose! >= 0 && deal.daysToProjectedClose! <= 14).toList();
+      answer = '${closing.length} deals are expected to close within two weeks.';
+      if (closing.isNotEmpty) {
+        blocks.add(ListBlock(title: 'Expected closings', items: [
+          for (final deal in closing)
+            ListItem(title: deal.property, route: '/more/deals/${deal.id}'),
+        ]));
+      }
+      sources.add(AssistantSource(kind: 'deal', title: 'Follow Up Boss', subtitle: 'Sample report', route: '/reports/${report.summary.id}'));
+    } else {
+      answer = 'Try one of the sample questions on the Assistant screen. You can find the full sample report under Reports.';
+    }
+    return AssistantReply(answer: answer, blocks: blocks, sources: sources, dataMode: 'synthetic', asOf: report.summary.generatedAt);
+  }
+
+  @override
+  Future<AssistantEmailReceipt> sendAssistantEmail(AssistantEmail email, {required String requestId}) async {
+    if (!_requireUser().isOwnerOrAdmin) throw const AssistantFailure('This account cannot send email.');
+    return AssistantEmailReceipt(to: email.to, demo: true);
   }
 }

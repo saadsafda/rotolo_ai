@@ -45,7 +45,10 @@ android {
     }
     buildTypes {
         release {
+            // Use the real release key when android/key.properties exists;
+            // otherwise fall back to the debug key so the APK is still installable.
             signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
         }
     }
 }

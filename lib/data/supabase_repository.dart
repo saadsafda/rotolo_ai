@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/report_push.dart';
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_email.dart';
 import '../models/json.dart';
 import '../models/payment.dart';
 import '../models/report.dart';
@@ -462,12 +463,39 @@ class SupabaseOpsRepository implements OpsRepository {
         (0, _) => 'No connection to the server. Check your internet and try again.',
         (401, _) => 'Your session has expired. Sign out and sign in again.',
         (403, _) => 'Your account does not have access to the assistant.',
-        (404, _) => 'The assistant is not deployed yet (ask-portfolio function).',
-        (503, 'assistant_not_configured') => 'The assistant is not switched on yet: the OpenAI key is not set in Supabase.',
+        (404, _) || (503, 'assistant_not_configured') => 'The assistant is unavailable right now.',
         _ => 'The assistant could not answer right now. Try again in a moment.',
       });
     } catch (_) {
       throw const AssistantFailure('The assistant could not answer right now. Try again in a moment.');
+    }
+  }
+
+  @override
+  Future<AssistantEmailReceipt> sendAssistantEmail(AssistantEmail email, {required String requestId}) async {
+    try {
+      final response = await _db.functions.invoke('send-assistant-email', body: {
+        ...email.toJson(),
+        'request_id': requestId,
+      });
+      if (asMap(response.data)['status'] != 'sent') {
+        throw const AssistantFailure('I could not confirm delivery. Check Gmail’s Sent folder before sending again.');
+      }
+      return AssistantEmailReceipt(to: email.to);
+    } on FunctionException catch (e) {
+      final code = asString(asMap(e.details)['error']);
+      throw AssistantFailure(switch ((e.status, code)) {
+        (401, _) => 'Your session expired. Please sign in again.',
+        (403, _) => 'This account does not have permission to send email.',
+        (400, _) => 'Check the email address, subject, and message.',
+        (404, _) || (503, 'mail_not_connected') => 'Email sending isn’t connected yet.',
+        (502, 'mail_rejected') => 'Gmail rejected this email. Check the details before trying again.',
+        _ => 'I could not confirm delivery. Check Gmail’s Sent folder before sending again.',
+      });
+    } on AssistantFailure {
+      rethrow;
+    } catch (_) {
+      throw const AssistantFailure('I could not confirm delivery. Check Gmail’s Sent folder before sending again.');
     }
   }
 }

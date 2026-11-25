@@ -41,6 +41,13 @@ void main() {
   }
 
   Future<void> nav(WidgetTester tester, String label) async {
+    const inMore = {'Home': 'overview', 'Payments': 'payments', 'Tasks': 'maintenance'};
+    if (inMore.containsKey(label)) {
+      await tester.tap(find.byKey(const ValueKey('nav-more')));
+      await tester.pumpAndSettle();
+      await tapVisible(tester, find.byKey(ValueKey('more-${inMore[label]}')));
+      return;
+    }
     await tester.tap(find.byKey(ValueKey('nav-${label.toLowerCase()}')));
     await tester.pumpAndSettle();
   }
@@ -160,7 +167,7 @@ void main() {
     await tester.pumpAndSettle();
     await snap(tester, 'notifications');
     await back(tester);
-    await tester.tap(find.byKey(const ValueKey('more-integrations')));
+    await tapVisible(tester, find.byKey(const ValueKey('more-connections')));
     await tester.pumpAndSettle();
     await snap(tester, 'integrations');
     await back(tester);
