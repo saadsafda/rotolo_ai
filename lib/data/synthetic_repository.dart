@@ -8,6 +8,7 @@ import '../core/time_format.dart';
 import '../core/money.dart';
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_chat.dart';
 import '../models/assistant_email.dart';
 import '../models/json.dart';
 import '../models/payment.dart';
@@ -47,6 +48,7 @@ class SyntheticRepository implements OpsRepository {
   final _payments = <PaymentSubmission>[];
   final _taskReviews = <String, TaskReview>{};
   final _evidenceReviews = <int, EvidenceReview>{};
+  final _assistantChats = <String, Map<String, SavedChat>>{};
 
   /// Demo accounts only. There are no real credentials in the app.
   static const demoPassword = 'demo';
@@ -438,6 +440,24 @@ class SyntheticRepository implements OpsRepository {
     final review = TaskReview(taskId: taskId, status: status, notes: notes, reviewer: user.displayName, at: _now());
     _taskReviews[taskId] = review;
     return review;
+  }
+
+  Map<String, SavedChat> get _userChats => _assistantChats.putIfAbsent(_requireUser().id, () => {});
+
+  @override
+  Future<List<ChatSummary>> listAssistantChats() async =>
+      _userChats.values.map((chat) => chat.summary).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+  @override
+  Future<SavedChat> getAssistantChat(String id) async => _userChats[id]!;
+
+  @override
+  Future<SavedChat> saveAssistantChat(ChatSummary chat, List<ChatEntry> entries, {int? version}) async {
+    final chats = _userChats;
+    if (chats[chat.id]?.version != version) {
+      throw const AssistantFailure('This chat changed. Reopen it from Chat history to continue.');
+    }
+    return chats[chat.id] = SavedChat(summary: chat, version: (version ?? 0) + 1, entries: List.unmodifiable(entries));
   }
 
   @override

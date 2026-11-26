@@ -1,8 +1,6 @@
 import 'json.dart';
 
-/// One reply from the `ask-portfolio` function. Text comes from the model;
-/// [blocks] and [sources] are built on the server from the records, so every
-/// figure in a card is exact.
+/// One grounded reply from the `ask-portfolio` function.
 class AssistantReply {
   const AssistantReply({
     required this.answer,
@@ -11,6 +9,7 @@ class AssistantReply {
     this.suggestions = const [],
     this.dataMode,
     this.asOf,
+    this.contextTools = const [],
   });
 
   final String answer;
@@ -19,6 +18,7 @@ class AssistantReply {
   final List<String> suggestions;
   final String? dataMode;
   final DateTime? asOf;
+  final List<Json> contextTools;
 
   factory AssistantReply.fromJson(Json j) => AssistantReply(
         answer: asString(j['answer']) ?? '',
@@ -27,11 +27,43 @@ class AssistantReply {
         suggestions: asStringList(j['suggestions']),
         dataMode: asString(j['data_mode']),
         asOf: asDateTime(j['as_of']),
+        contextTools: asMapList(j['context_tools']),
       );
+
+  Json toJson() => {
+        'answer': answer,
+        'blocks': [for (final b in blocks) b.toJson()],
+        'sources': [for (final s in sources) s.toJson()],
+        'suggestions': suggestions,
+        'data_mode': dataMode,
+        'as_of': asOf?.toIso8601String(),
+        'context_tools': contextTools,
+      };
 }
 
 sealed class AssistantBlock {
   const AssistantBlock();
+  Json toJson() => switch (this) {
+        MetricBlock b => {
+            'type': 'metric', 'label': b.label, 'value': b.value, 'caption': b.caption,
+            'chip': {'text': b.chipText, 'tone': b.chipTone},
+          },
+        BarsBlock b => {
+            'type': 'bars', 'title': b.title,
+            'bars': [
+              for (final item in b.bars)
+                {'label': item.label, 'value': item.value, 'display': item.display, 'highlight': item.highlight},
+            ],
+          },
+        ListBlock b => {
+            'type': 'list', 'title': b.title,
+            'items': [
+              for (final item in b.items)
+                {'title': item.title, 'subtitle': item.subtitle, 'trailing': item.trailing, 'tone': item.tone, 'route': item.route},
+            ],
+          },
+        DraftBlock b => {'type': 'draft', 'title': b.title, 'body': b.body, 'note': b.note},
+      };
   static AssistantBlock? tryParse(Json j) => switch (asString(j['type'])) {
         'metric' => MetricBlock(
             label: asString(j['label']) ?? '',
@@ -132,6 +164,8 @@ class AssistantSource {
         subtitle: asString(j['subtitle']) ?? '',
         route: _safeRoute(asString(j['route'])),
       );
+
+  Json toJson() => {'kind': kind, 'title': title, 'subtitle': subtitle, 'route': route};
 }
 
 /// Only in-app paths are followed; anything else from the server is dropped.
@@ -147,8 +181,9 @@ class AssistantFailure implements Exception {
 }
 
 class ChatTurn {
-  const ChatTurn(this.role, this.text);
+  const ChatTurn(this.role, this.text, {this.contextTools = const []});
   final String role; // user | assistant
   final String text;
-  Json toJson() => {'role': role, 'text': text};
+  final List<Json> contextTools;
+  Json toJson() => {'role': role, 'text': text, if (contextTools.isNotEmpty) 'context_tools': contextTools};
 }

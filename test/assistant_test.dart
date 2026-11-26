@@ -5,7 +5,9 @@ import 'package:rotolo_ai_assistant/core/time_format.dart';
 import 'package:rotolo_ai_assistant/data/synthetic_repository.dart';
 import 'package:rotolo_ai_assistant/main.dart';
 import 'package:rotolo_ai_assistant/models/assistant.dart';
+import 'package:rotolo_ai_assistant/models/assistant_chat.dart';
 import 'package:rotolo_ai_assistant/models/assistant_email.dart';
+import 'package:rotolo_ai_assistant/state/assistant_state.dart';
 import 'package:rotolo_ai_assistant/state/providers.dart';
 
 import 'helpers.dart';
@@ -47,6 +49,7 @@ class _FakeAssistantRepo extends SyntheticRepository {
         {'kind': 'lease', 'title': 'Lease — evil', 'subtitle': 'x', 'route': 'https://evil.example/phish'},
       ],
       'suggestions': ['Draft a reminder to TEST Tenant Alpha'],
+      'context_tools': [{'name': 'get_overdue_rent', 'args': <String, String>{}}],
       'data_mode': 'synthetic',
       'as_of': '2026-11-18T14:05:12Z',
     });
@@ -106,6 +109,19 @@ void main() {
     expect(find.text('Daily report'), findsOneWidget);
   });
 
+  testWidgets('chat sends exact Urdu text and uses right-to-left input', (tester) async {
+    final (_, repo) = await _pump(tester);
+    const message = '2026-11-24 کو Time Doctor میں ٹیم نے کتنے گھنٹے کام کیا؟';
+    final input = find.byKey(const ValueKey('assistant-input'));
+    await tester.enterText(input, message);
+    await tester.pump();
+
+    expect(tester.widget<TextField>(input).textDirection, TextDirection.rtl);
+    await tester.tap(find.byKey(const ValueKey('assistant-send')));
+    await tester.pumpAndSettle();
+    expect(repo.asked.single.single.text, message);
+  });
+
   test('routes outside the app are dropped from replies', () {
     final r = AssistantReply.fromJson({
       'answer': 'x',
@@ -145,6 +161,63 @@ void main() {
     expect(find.textContaining('what would you like to know?'), findsOneWidget);
     expect(find.text('Which deals are closing soon?'), findsOneWidget);
     expect(find.text('Which tenants are late on rent?'), findsNothing);
+    expect(find.byTooltip('Chat history'), findsNothing);
+  });
+
+  testWidgets('new chats keep earlier conversations and reopened questions carry their context', (tester) async {
+    final (container, repo) = await _pump(tester);
+    const first = 'Which tenants are late on rent?';
+    const next = 'How many of those?';
+    final threads = container.read(assistantThreadsProvider.notifier);
+    final userId = container.read(sessionProvider)!.id;
+    Future<void> ask(String text) async {
+      await tester.enterText(find.byKey(const ValueKey('assistant-input')), text);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('assistant-send')));
+      await tester.pumpAndSettle();
+    }
+
+    await ask(first);
+    final saved = (await repo.listAssistantChats()).single;
+    expect((await repo.getAssistantChat(saved.id)).entries.length, 2);
+    await tester.tap(find.byTooltip('New conversation'));
+    await tester.pumpAndSettle();
+    expect(find.text(first), findsNothing);
+    await ask('Show deals');
+    expect(repo.asked.last.single.text, 'Show deals');
+    expect(await repo.listAssistantChats(), hasLength(2));
+
+    await tester.tap(find.byTooltip('Chat history'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(first));
+    await tester.pumpAndSettle();
+    await ask(next);
+    expect(repo.asked.last.map((turn) => turn.role), ['user', 'assistant', 'user']);
+    expect(repo.asked.last.first.text, first);
+    expect(repo.asked.last[1].contextTools.single['name'], 'get_overdue_rent');
+    expect(repo.asked.last.last.text, next);
+    expect((await repo.getAssistantChat(saved.id)).entries, hasLength(4));
+
+    threads.newChat(userId);
+    container.invalidate(assistantThreadsProvider);
+    await tester.pumpAndSettle();
+    final restored = container.read(assistantThreadsProvider).requireValue!;
+    expect(restored.history, hasLength(2));
+    expect(restored.history.map((item) => item.id), contains(saved.id));
+  });
+
+  test('saved messages keep cards and recover interrupted answers', () {
+    final reply = AssistantReply.fromJson({
+      'answer': 'Answer',
+      'blocks': [{'type': 'list', 'title': 'Open deals', 'items': [{'title': 'First deal', 'route': '/more/deals/42'}]}],
+      'context_tools': [{'name': 'list_deals', 'args': {'filter': 'open'}}],
+    });
+    final restored = ChatEntry.fromJson(ChatEntry(id: 2, user: false, text: reply.answer, at: fixedNow, reply: reply).toJson());
+    expect((restored.reply!.blocks.single as ListBlock).items.single.route, '/more/deals/42');
+    expect(restored.reply!.contextTools.single['name'], 'list_deals');
+    final pending = ChatEntry.fromJson(ChatEntry(id: 3, user: false, text: '', at: fixedNow, pending: true).toJson());
+    expect(pending.pending, isFalse);
+    expect(pending.error, contains('interrupted'));
   });
 
   testWidgets('email asks for an exact recipient and sends only after review', (tester) async {

@@ -28,6 +28,31 @@ insert into public.profiles (id, display_name, role, can_submit_payments, can_re
   ('00000000-0000-0000-0000-00000000000b', 'Admin', 'admin', true, false),
   ('00000000-0000-0000-0000-00000000000c', 'Staff', 'staff', false, false);
 
+-- Saved conversations stay scoped to their account and access level.
+set role authenticated;
+select public.t_as('00000000-0000-0000-0000-00000000000a');
+insert into public.assistant_chats (id, title, entries)
+values ('10000000-0000-0000-0000-000000000001', 'Owner chat', '[{"text":"Question"}]');
+update public.assistant_chats set version=2, entries='[{"text":"Question"},{"text":"Reply"}]'
+where id='10000000-0000-0000-0000-000000000001' and version=1;
+do $$ begin
+  assert (select version from public.assistant_chats) = 2, 'owner can update their own conversation';
+end $$;
+select public.t_as('00000000-0000-0000-0000-00000000000b');
+do $$ begin
+  assert (select count(*) from public.assistant_chats) = 0, 'other administrators cannot read a private chat';
+end $$;
+select public.t_expect_error($$update public.assistant_chats set user_id = auth.uid()$$, 'permission denied');
+reset role;
+update public.profiles set can_review_payments=false where id='00000000-0000-0000-0000-00000000000a';
+set role authenticated;
+select public.t_as('00000000-0000-0000-0000-00000000000a');
+do $$ begin
+  assert (select count(*) from public.assistant_chats) = 0, 'a previous access scope cannot expose old replies';
+end $$;
+reset role;
+update public.profiles set can_review_payments=true where id='00000000-0000-0000-0000-00000000000a';
+
 -- Report ingestion (service role)
 set role service_role;
 select public.svc_ingest_report(jsonb_build_object(

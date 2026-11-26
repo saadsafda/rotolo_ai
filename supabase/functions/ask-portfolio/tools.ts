@@ -7,6 +7,9 @@
 // sends or posts anything.
 
 // deno-lint-ignore-file no-explicit-any
+import { type Reply, combine, say } from "./reply.ts";
+import { type TimeWindow, datesIn } from "./time_window.ts";
+
 export type Tone = "ac" | "ok" | "wa" | "er" | "na";
 export type Block =
   | { type: "metric"; label: string; value: string; caption?: string; chip?: { text: string; tone: Tone } }
@@ -14,7 +17,7 @@ export type Block =
   | { type: "list"; title: string; items: { title: string; subtitle?: string; trailing?: string; tone?: Tone; route?: string }[] }
   | { type: "draft"; title: string; body: string; note: string };
 export type Source = { kind: "ledger" | "lease" | "deal" | "email" | "tasks" | "time" | "payments" | "report"; title: string; subtitle: string; route?: string };
-export type ToolResult = { data: unknown; blocks: Block[]; sources: Source[]; amounts: string[]; suggestions: string[] };
+export type ToolResult = { reply?: Reply; data: unknown; blocks: Block[]; sources: Source[]; amounts: string[]; suggestions: string[] };
 
 export type Section = { source: string; status: string; collected_at: string | null; cutoff: any; coverage?: Record<string, unknown>; warnings: any[]; payload: any };
 export type Ctx = {
@@ -23,6 +26,7 @@ export type Ctx = {
   payments: any[];
   taskReviews: Record<string, string>;
   evidenceReviewed: Set<number>;
+  timeHistory?: Record<string, { section: Section; reportId: string }>;
   today: string; // business date, YYYY-MM-DD
   timezone: string;
 };
@@ -54,6 +58,7 @@ function section(ctx: Ctx, key: string): Section | null {
   return s && s.status !== "unavailable" ? s : null;
 }
 const unavailable = (what: string): ToolResult => ({
+  reply: { template: what + " is not in the latest report or not available for this user’s role.", slots: [] },
   data: { available: false, reason: what + " is not in the latest report or not available for this user's role." },
   blocks: [], sources: [], amounts: [], suggestions: [],
 });
@@ -92,11 +97,12 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
     return unavailable("Overdue balances for these leases");
   }
   const total = late.reduce((s, l) => s + (l.api_balance.overdue_minor ?? 0), 0);
-  const overdue = late.length === 1 ? "1 lease has" : `${late.length} leases have`;
-  const answer = late.length
-    ? `${overdue} overdue rent, totaling ${money(total)} in DoorLoop.`
-    : "DoorLoop shows no overdue rent for the leases it reported.";
-  const missingNote = missing ? ` DoorLoop did not report a balance for ${missing} ${missing === 1 ? "lease" : "leases"}.` : "";
+  const missingNote = missing === 1 ? say` DoorLoop did not report a balance for 1 lease.`
+    : missing > 1 ? say` DoorLoop did not report balances for ${missing} leases.` : say``;
+  const mainReply = late.length === 1 ? say`1 lease has overdue rent, totaling ${money(total)} in DoorLoop.`
+    : late.length > 1 ? say`${late.length} leases have overdue rent, totaling ${money(total)} in DoorLoop.`
+    : say`DoorLoop shows no overdue rent for the leases it reported.`;
+  const reply = combine(mainReply, missingNote);
   const top = late.slice(0, 6);
   const max = top.length ? top[0].api_balance.overdue_minor! : 0;
   const amounts = [money(total), ...late.map((l) => money(l.api_balance.overdue_minor!)), ...top.map((l) => compact(l.api_balance.overdue_minor!))];
@@ -116,7 +122,8 @@ function overdueRent(ctx: Ctx, args: { property?: string }): ToolResult {
       route: "/payments/balance/" + l.lease_id })) });
   }
   return {
-    data: { answer: answer + missingNote, as_of: rent.collected_at, total_overdue: money(total), leases_overdue: late.length, leases_in_scope: scope.length,
+    reply,
+    data: { as_of: rent.collected_at, total_overdue: money(total), leases_overdue: late.length, leases_in_scope: scope.length,
       balance_fields_missing: missing,
       leases: late.slice(0, 12).map((l) => ({ tenant: tenantName(l), lease: leaseLabel(l), overdue: money(l.api_balance.overdue_minor!), status: l.status })),
       note: "Balances are DoorLoop lease fields, not a reconciled ledger. Verify before contacting a tenant." },
@@ -160,6 +167,8 @@ function leaseDetails(ctx: Ctx, args: { query: string }): ToolResult {
       tone: p.status === "rejected" ? "na" as Tone : "ac" as Tone, route: "/payments/" + p.id })) });
   }
   return {
+    reply: b.total_due_minor == null ? say`DoorLoop did not return the balance for ${leaseLabel(l)}.`
+      : say`The DoorLoop balance for ${leaseLabel(l)} is ${money(b.total_due_minor)}.`,
     data: { lease: leaseLabel(l), tenant: tenantName(l), status: l.status, total_due: b.total_due_minor == null ? null : money(b.total_due_minor),
       overdue: b.overdue_minor == null ? null : money(b.overdue_minor),
       payments_this_month: pays.map((p) => ({ date: p.date, amount: p.amount_minor == null ? null : money(p.amount_minor), returned: !!p.returned_linked })),
@@ -215,17 +224,27 @@ function listDeals(ctx: Ctx, args: { filter?: string; query?: string }): ToolRes
   const f = args.filter ?? "open";
   let deals = v.deals.filter((d: any) => args.query ? matches([d.property, d.pipeline, d.stage], args.query) : true);
   deals = deals.filter((d: any) => f === "all" ? true
+    : f === "cancelled" ? d.classification === "cancelled"
     : f === "needs_review" ? d.needsReview
     : f === "closing_soon" ? d.classification === "open" && d.days_to_projected_close != null && d.days_to_projected_close >= 0 && d.days_to_projected_close <= 14
     : f === "past_due" ? d.classification === "open" && (d.days_to_projected_close ?? 0) < 0
     : d.classification === "open");
-  const title = { needs_review: "Deals needing evidence review", closing_soon: "Closing in the next 14 days", past_due: "Projected close date passed", all: "All deals", open: "Open deals" }[f] ?? "Deals";
+  const title = { needs_review: "Deals needing evidence review", closing_soon: "Closing in the next 14 days", past_due: "Projected close date passed", all: "All deals", open: "Open deals", cancelled: "Cancelled Follow Up Boss deals" }[f] ?? "Deals";
+  const listed = f === "cancelled" ? deals : deals.slice(0, 15);
+  const reply = f === "cancelled"
+    ? deals.length === 0
+      ? say`The latest Follow Up Boss report contains no deals marked cancelled.`
+      : deals.length === 1
+      ? say`The latest Follow Up Boss report contains 1 deal marked cancelled.`
+      : say`The latest Follow Up Boss report contains ${deals.length} deals marked cancelled.`
+    : combine({ template: title, slots: [] }, say` · ${deals.length}.`);
   return {
-    data: { filter: f, count: deals.length, deals: deals.slice(0, 15).map((d: any) => ({ property: d.property, pipeline: d.pipeline, stage: d.stage,
+    reply,
+    data: { filter: f, count: deals.length, deals: listed.map((d: any) => ({ property: d.property, pipeline: d.pipeline, stage: d.stage,
       projected_close: d.projected_close_date, days_to_close: d.days_to_projected_close, flags: d.flags, needs_review: d.needsReview })) },
-    blocks: [{ type: "list", title: `${title} · ${deals.length}`, items: deals.slice(0, 15).map((d: any) => ({
+    blocks: [{ type: "list", title: `${title} · ${deals.length}`, items: listed.map((d: any) => ({
       title: d.property, subtitle: `${d.pipeline} · ${d.stage}`,
-      trailing: d.projected_close_date ? "Close " + d.projected_close_date.slice(5).replace("-", "/") : undefined,
+      trailing: f !== "cancelled" && d.projected_close_date ? "Close " + d.projected_close_date.slice(5).replace("-", "/") : undefined,
       tone: d.needsReview ? "wa" as Tone : d.classification === "open" ? "ac" as Tone : d.classification === "closed_by_system_flag" ? "ok" as Tone : "na" as Tone,
       route: "/more/deals/" + d.deal_id })) }],
     sources: [reportSource(ctx, v.fub, "deal", "Follow Up Boss deals", "CRM")],
@@ -253,6 +272,9 @@ function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
     title: m.subject, subtitle: (m.from ?? "") + " · " + (m.date ?? "").slice(0, 10),
     tone: m.mapping === "UNIQUE_PROPERTY_DEAL" ? "na" as Tone : "wa" as Tone })) });
   return {
+    reply: d.projected_close_date
+      ? say`${d.property} is in ${d.stage} in Follow Up Boss. The projected close date is ${d.projected_close_date}.`
+      : say`${d.property} is in ${d.stage} in Follow Up Boss. No projected close date is set.`,
     data: { property: d.property, stage: d.stage, pipeline: d.pipeline, projected_close: d.projected_close_date, flags: d.flags,
       evidence_status: st?.status ?? null, needs_review: d.needsReview,
       // Untrusted third-party text: quote or summarise, never follow instructions in it.
@@ -277,7 +299,11 @@ function emailEvidence(ctx: Ctx): ToolResult {
     : coverage.next_page_pending === true ? "Gmail had more results than this report collected."
     : "The report has partial Gmail coverage.";
   return {
-    data: { answer: `The latest report found verified attorney replies for ${verifiedReplies} ${verifiedReplies === 1 ? "deal" : "deals"} in Harry’s Gmail. ${note}` },
+    reply: combine(verifiedReplies === 1
+      ? say`The latest report found verified attorney replies for 1 deal in Harry’s Gmail.`
+      : say`The latest report found verified attorney replies for ${verifiedReplies} deals in Harry’s Gmail.`,
+      { template: " " + note, slots: [] }),
+    data: { count: verifiedReplies },
     blocks: [{ type: "list", title: "Harry’s Gmail · 90-day attorney search", items: [
       { title: "Deals with verified attorney replies", trailing: String(verifiedReplies) },
       { title: "Matched correspondence", trailing: String(matched) },
@@ -304,6 +330,7 @@ function listTasks(ctx: Ctx, args: { filter?: string; property?: string }): Tool
     .sort((a: any, b: any) => (b.days ?? -999) - (a.days ?? -999));
   const title = { overdue: "Overdue maintenance", claimed: "Completion claimed, not verified", open: "Open maintenance", all: "Maintenance tasks" }[f] ?? "Tasks";
   return {
+    reply: combine({ template: title, slots: [] }, say` · ${tasks.length}.`),
     data: { filter: f, count: tasks.length, tasks: tasks.slice(0, 15).map((t: any) => ({ subject: t.subject, property: t.property_name, status: t.status,
       due: t.due_date, days_overdue: t.is_overdue ? t.days : null, priority: t.priority })),
       note: "Due dates are not confirmed contractor appointments." },
@@ -318,7 +345,7 @@ function listTasks(ctx: Ctx, args: { filter?: string; property?: string }): Tool
 
 function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
   const s = section(ctx, "time_doctor");
-  if (!s) return { ...unavailable("Time Doctor activity"), data: { answer: "Time Doctor hours are unavailable in the latest report." } };
+  if (!s) return { ...unavailable("Time Doctor activity"), reply: say`Time Doctor hours are unavailable in the latest report.` };
   const users: any[] = s.payload?.users ?? [];
   const missing: any[] = s.payload?.scope?.missing ?? [];
   const workDate = s.payload?.work_date ?? "the report’s work date";
@@ -329,9 +356,9 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
     const staff = [...users, ...missing].filter((u) => words.length &&
       words.every((word) => norm(u.name).split(" ").includes(word)));
     if (staff.length !== 1) {
-      return { data: { answer: staff.length ? "Several staff match. Which full name should I look up?"
-        : `I couldn’t find that staff member in this report’s Time Doctor scope for ${workDate}.` },
-      blocks: [], sources, amounts: [], suggestions: ["Show team hours"] };
+      return { reply: staff.length ? say`Several staff match. Which full name should I look up?`
+        : say`I couldn’t find that staff member in this report’s Time Doctor scope for ${workDate}.`,
+      data: {}, blocks: [], sources, amounts: [], suggestions: ["Show team hours"] };
     }
     const user = staff[0];
     const metrics = [
@@ -341,9 +368,10 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
     ];
     const tracked = typeof user.tracked_sec === "number" ? h(user.tracked_sec) : null;
     return {
-      data: { answer: tracked == null ? `Time Doctor didn’t return tracked hours for ${user.name} on ${workDate}.`
-        : user.tracked_sec === 0 ? `Time Doctor recorded no activity for ${user.name} on ${workDate}.`
-        : `${user.name} tracked ${tracked} on ${workDate}.` },
+      reply: tracked == null ? say`Time Doctor didn’t return tracked hours for ${user.name} on ${workDate}.`
+        : user.tracked_sec === 0 ? say`Time Doctor recorded no activity for ${user.name} on ${workDate}.`
+        : say`${user.name} tracked ${tracked} on ${workDate}.`,
+      data: { tracked_seconds: user.tracked_sec, partial: s.status !== "complete" },
       blocks: [{ type: "list", title: `${user.name} · ${workDate}`, items: metrics.map((m) => ({
         title: m.title, trailing: typeof m.seconds === "number" ? h(m.seconds) : "Not returned",
       })) }],
@@ -356,12 +384,13 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
     (reported.length > 0 && reported.length === users.length ? reported.reduce((a, u) => a + u.tracked_sec, 0) : null);
   const noActivity = s.payload?.activity_status === "no_activity";
   const configured = s.payload?.scope?.intended?.length || users.length + missing.length;
-  const coverage = reported.length < configured ? ` The report includes hours for ${reported.length} of ${configured} team members.` : "";
-  const answer = noActivity ? `Time Doctor recorded no tracked time on ${workDate}.`
-    : total == null ? `Time Doctor did not return a team total for ${workDate}.`
-    : `Time Doctor recorded ${(total / 3600).toFixed(1)} hours for the team on ${workDate}.`;
+  const coverage = reported.length < configured ? say` The report includes hours for ${reported.length} of ${configured} team members.` : say``;
+  const reply = noActivity ? say`Time Doctor recorded no tracked time on ${workDate}.`
+    : total == null ? say`Time Doctor did not return a team total for ${workDate}.`
+    : say`Time Doctor recorded ${(total / 3600).toFixed(1)} hours for the team on ${workDate}.`;
   return {
-    data: { answer: answer + coverage, work_date: s.payload?.work_date, total_tracked: total == null ? null : h(total), activity_status: noActivity ? "no_activity" : undefined, users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
+    reply: combine(reply, coverage),
+    data: { tracked_seconds: noActivity ? 0 : total, partial: s.status !== "complete" || reported.length < configured, work_date: s.payload?.work_date, total_tracked: total == null ? null : h(total), activity_status: noActivity ? "no_activity" : undefined, users: users.map((u) => ({ name: u.name, tracked: u.tracked_sec == null ? null : h(u.tracked_sec),
       active: u.active_sec == null ? null : h(u.active_sec), idle: u.idle_sec == null ? null : h(u.idle_sec) })),
       missing: missing.map((m) => m.name + " (" + m.reason + ")"), note: "Untracked gaps are not evidence of non-work." },
     blocks: [
@@ -377,12 +406,61 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
   };
 }
 
+function historicalHours(ctx: Ctx, args: TimeWindow & { user?: string }): ToolResult {
+  const dates = datesIn(args);
+  const empty = (reply: Reply): ToolResult => ({ reply, data: {}, blocks: [], sources: [], amounts: [], suggestions: [] });
+  if (!dates.length) return empty(say`Which dates should I check? Please give one date or a range of up to 31 days.`);
+  if (!ctx.timeHistory) return empty(say`I couldn’t check the saved Time Doctor reports for the requested date. Please try again.`);
+  const matched = dates.flatMap(date => {
+    const record = ctx.timeHistory?.[date];
+    if (!record) return [];
+    const result = teamHours({
+      ...ctx,
+      report: ctx.report ? { ...ctx.report, id: record.reportId } : ctx.report,
+      sections: { time_doctor: record.section },
+    }, args);
+    const data = result.data as { tracked_seconds?: number | null; partial?: boolean };
+    return [{ date, result, seconds: data.tracked_seconds, partial: data.partial }];
+  });
+  if (dates.length === 1) {
+    return matched[0]?.result ?? empty(say`There is no saved Time Doctor report available for ${args.date}.`);
+  }
+  const end = dates[dates.length - 1];
+  const usable = matched.filter(day => typeof day.seconds === "number");
+  if (!usable.length) {
+    return empty(args.user
+      ? say`There are no saved Time Doctor hours available for ${args.user} from ${args.date} through ${end}.`
+      : say`There are no saved Time Doctor hours available from ${args.date} through ${end}.`);
+  }
+  const hours = (usable.reduce((sum, day) => sum + (day.seconds ?? 0), 0) / 3600).toFixed(1);
+  const tracked = args.user
+    ? say`Time Doctor recorded ${hours} hours for ${args.user} from ${args.date} through ${end}.`
+    : say`Time Doctor recorded ${hours} team hours from ${args.date} through ${end}.`;
+  const coverage = usable.length < dates.length
+    ? say` This includes ${usable.length} of ${dates.length} days with saved hours. The other days have no available totals.`
+    : say``;
+  return {
+    reply: combine(combine(tracked, coverage), usable.some(day => day.partial)
+      ? say` Some of the saved totals are partial.` : say``),
+    data: {}, amounts: [], suggestions: [],
+    blocks: [{
+      type: "list", title: "Time Doctor hours by day",
+      items: dates.map(date => {
+        const day = usable.find(item => item.date === date);
+        return { title: date, trailing: day ? ((day.seconds ?? 0) / 3600).toFixed(1) + " h" : "Unavailable" };
+      }),
+    }],
+    sources: matched.flatMap(day => day.result.sources.map(source => ({ ...source, title: source.title + " · " + day.date }))),
+  };
+}
+
 const PAY_LABEL: Record<string, string> = { submitted: "Submitted", under_review: "Under review", approved: "Approved · not posted",
   rejected: "Rejected", posting: "Posting", posted: "Posted in DoorLoop", failed: "Posting failed" };
 function outsidePayments(ctx: Ctx, args: { status?: string }): ToolResult {
   const needs = (p: any) => ["submitted", "under_review", "approved", "failed"].includes(p.status);
   const rows = ctx.payments.filter((p) => args.status === "all" ? true : needs(p));
   return {
+    reply: say`Outside payments · ${rows.length}.`,
     data: { count: rows.length, scope: args.status === "all" ? "all visible" : "needing action",
       payments: rows.slice(0, 15).map((p) => ({ amount: money(p.amount_minor), method: p.method_detail ?? p.method, status: PAY_LABEL[p.status] ?? p.status,
         where: [p.property_name, p.unit].filter(Boolean).join(" · "), paid_on: p.payment_date })),
@@ -402,6 +480,7 @@ function reportStatus(ctx: Ctx): ToolResult {
     doorloop_rent: "DoorLoop rent", doorloop_tasks: "DoorLoop tasks", time_doctor: "Time Doctor" };
   const secs = Object.values(ctx.sections);
   return {
+    reply: say`Here is the status of the data sources in the latest report.`,
     data: { business_date: ctx.report.business_date, generated_at: ctx.report.generated_at, status: ctx.report.status, data_mode: ctx.report.data_mode,
       sources: secs.map((s) => ({ source: names[s.source] ?? s.source, status: s.status, collected: s.collected_at, warnings: (s.warnings ?? []).map((w: any) => w.message).slice(0, 2) })) },
     blocks: [{ type: "list", title: "Data sources · latest report", items: secs.map((s) => ({
@@ -420,14 +499,18 @@ export const TOOL_SPECS = [
     parameters: { type: "object", properties: { query: { type: "string", description: "Tenant name, unit, property or lease reference" } }, required: ["query"], additionalProperties: false } },
   { name: "draft_rent_reminder", description: "Builds a polite reminder draft for a tenant with an overdue balance. It is never sent.",
     parameters: { type: "object", properties: { query: { type: "string", description: "Tenant name, unit or property" } }, required: ["query"], additionalProperties: false } },
-  { name: "list_deals", description: "Follow Up Boss deals by filter.",
-    parameters: { type: "object", properties: { filter: { type: "string", enum: ["open", "needs_review", "closing_soon", "past_due", "all"] }, query: { type: "string" } }, additionalProperties: false } },
+  { name: "list_deals", description: "Follow Up Boss (FUB) deals by filter. Use cancelled for cancellation leads, cancelled deals, or deals in a cancellation stage.",
+    parameters: { type: "object", properties: { filter: { type: "string", enum: ["open", "needs_review", "closing_soon", "past_due", "cancelled", "all"] }, query: { type: "string" } }, additionalProperties: false } },
   { name: "get_deal", description: "One deal with its stage, dates, flags and Harry's attorney email evidence.",
     parameters: { type: "object", properties: { query: { type: "string", description: "Property address or name" } }, required: ["query"], additionalProperties: false } },
   { name: "list_tasks", description: "DoorLoop maintenance tasks by filter.",
     parameters: { type: "object", properties: { filter: { type: "string", enum: ["overdue", "open", "claimed", "all"] }, property: { type: "string" } }, additionalProperties: false } },
-  { name: "get_team_hours", description: "Time Doctor tracked, active and idle hours and coverage for the work date in the latest report. Supply a staff name when asked about one person.",
-    parameters: { type: "object", properties: { user: { type: "string", description: "Optional staff name from the question" } }, additionalProperties: false } },
+  { name: "get_team_hours", description: "Time Doctor tracked, active and idle hours. For an explicit day or period, always pass the resolved dates. Without a date, use the latest report. Supply a staff name when asked about one person.",
+    parameters: { type: "object", properties: {
+      user: { type: "string", description: "Optional staff name from the question" },
+      date: { type: "string", description: "Requested work date or first day of the requested period in YYYY-MM-DD" },
+      through: { type: "string", description: "Last inclusive work date in YYYY-MM-DD, for a period only" },
+    }, additionalProperties: false } },
   { name: "get_email_evidence", description: "Harry's Gmail attorney correspondence coverage, matched messages and verified replies in the latest report. Use get_deal for correspondence about a named property.",
     parameters: { type: "object", properties: {}, additionalProperties: false } },
   { name: "list_outside_payments", description: "Outside payment requests submitted in the app (Zelle, check, cash…).",
@@ -444,7 +527,7 @@ export function runTool(name: string, args: any, ctx: Ctx): ToolResult {
     case "list_deals": return listDeals(ctx, args ?? {});
     case "get_deal": return dealDetails(ctx, args ?? {});
     case "list_tasks": return listTasks(ctx, args ?? {});
-    case "get_team_hours": return teamHours(ctx, args ?? {});
+    case "get_team_hours": return args?.date ? historicalHours(ctx, args) : teamHours(ctx, args ?? {});
     case "get_email_evidence": return emailEvidence(ctx);
     case "list_outside_payments": return outsidePayments(ctx, args ?? {});
     case "get_report_status": return reportStatus(ctx);

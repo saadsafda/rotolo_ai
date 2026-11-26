@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 
 import '../../core/time_format.dart';
 import '../../models/app_user.dart';
 import '../../models/assistant.dart';
+import '../../models/assistant_chat.dart';
 import '../../models/assistant_email.dart';
 import '../../models/report.dart';
 import '../../state/assistant_state.dart';
@@ -83,27 +84,92 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       ),
     );
     if (receipt != null && mounted && ref.read(sessionProvider)?.id == user.id) {
-      ref.read(assistantThreadsProvider.notifier).addEmailReceipt(user.id, receipt.message);
+      await ref.read(assistantThreadsProvider.notifier).addEmailReceipt(user.id, receipt.message);
+    }
+  }
+
+  Future<void> _showHistory(AssistantWorkspace workspace) async {
+    _focus.unfocus();
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 8, 4),
+              child: Row(children: [
+                const Expanded(child: Text('Chat history', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600))),
+                IconButton(tooltip: 'Close history', icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+              ]),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: workspace.history.length,
+                itemBuilder: (context, index) {
+                  final chat = workspace.history[index];
+                  return ListTile(
+                    title: Text(chat.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(DateFormat('MMM d, h:mm a').format(chat.updatedAt.toLocal())),
+                    selected: chat.id == workspace.chat?.summary.id,
+                    onTap: () => Navigator.pop(context, chat.id),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (mounted && selected != null) {
+      _input.clear();
+      await ref.read(assistantThreadsProvider.notifier).openChat(workspace.userId, selected);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final user = ref.watch(sessionProvider)!;
-    final thread = ref.watch(assistantThreadsProvider)[user.id] ?? const <ChatEntry>[];
-    final busy = thread.any((e) => e.pending);
+    final user = ref.watch(sessionProvider);
+    if (user == null) return const SizedBox.shrink();
+    final workspace = ref.watch(assistantThreadsProvider);
+    final active = workspace.asData?.value;
+    final chat = active?.userId == user.id ? active : null;
+    final thread = chat?.entries ?? const <ChatEntry>[];
+    final busy = chat?.busy ?? true;
     final t = context.t;
     ref.listen(assistantThreadsProvider, (_, _) => _toBottom());
 
     return Column(children: [
       _Header(
-        onNewChat: thread.isEmpty || busy ? null : () => ref.read(assistantThreadsProvider.notifier).clear(user.id),
+        onNewChat: thread.isEmpty || busy ? null : () {
+          _input.clear();
+          ref.read(assistantThreadsProvider.notifier).newChat(user.id);
+        },
         onEmail: user.isOwnerOrAdmin && thread.isNotEmpty && !busy ? () => _openEmail(user, const EmailRequest()) : null,
+        onHistory: chat != null && chat.history.isNotEmpty && !busy ? () => _showHistory(chat) : null,
       ),
+      if (chat?.saveError case final String message)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: NoticeBox(
+            tone: Tone.wa, icon: Icons.info_outline, text: message,
+            child: TextButton(
+              onPressed: busy ? null : () => ref.read(assistantThreadsProvider.notifier).retrySave(user.id),
+              child: const Text('Try saving again'),
+            ),
+          ),
+        ),
       Expanded(
         child: Container(
           color: t.bg,
-          child: thread.isEmpty
+          child: workspace.hasError && chat == null
+              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Text('Could not load your chats.'),
+                  TextButton(onPressed: () => ref.invalidate(assistantThreadsProvider), child: const Text('Try again')),
+                ]))
+              : chat == null
+              ? const Center(child: CircularProgressIndicator())
+              : thread.isEmpty
               ? _Welcome(
                   user: user,
                   onAsk: (q) => _send(user.id, q),
@@ -139,9 +205,10 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({this.onNewChat, this.onEmail});
+  const _Header({this.onNewChat, this.onEmail, this.onHistory});
   final VoidCallback? onNewChat;
   final VoidCallback? onEmail;
+  final VoidCallback? onHistory;
 
   @override
   Widget build(BuildContext context) {
@@ -161,6 +228,12 @@ class _Header extends StatelessWidget {
               tooltip: 'Write an email',
               onPressed: onEmail,
               icon: const Icon(Icons.mail_outline_rounded, color: Colors.white),
+            ),
+          if (onHistory != null)
+            IconButton(
+              tooltip: 'Chat history',
+              onPressed: onHistory,
+              icon: const Icon(Icons.history, color: Colors.white),
             ),
           if (onNewChat != null)
             IconButton(
@@ -256,7 +329,11 @@ class _UserBubble extends StatelessWidget {
             borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(18), topRight: Radius.circular(18), bottomLeft: Radius.circular(18), bottomRight: Radius.circular(6)),
           ),
-          child: SelectableText(text, style: TextStyle(fontSize: 15.5, height: 1.4, color: t.onac)),
+          child: SelectableText(
+            text,
+            textDirection: _messageDirection(text),
+            style: TextStyle(fontSize: 15.5, height: 1.4, color: t.onac),
+          ),
         ),
       ),
     );
@@ -324,6 +401,9 @@ class _AssistantMessage extends StatelessWidget {
   }
 }
 
+TextDirection _messageDirection(String text) =>
+    Bidi.detectRtlDirectionality(text) ? TextDirection.rtl : TextDirection.ltr;
+
 /// Answer text with **bold** spans; dollar amounts are emphasised in teal.
 class RichAnswer extends StatelessWidget {
   const RichAnswer({super.key, required this.text});
@@ -348,7 +428,11 @@ class RichAnswer extends StatelessWidget {
         rest = rest.substring(m.end);
       }
     }
-    return SelectableText.rich(TextSpan(children: spans), style: TextStyle(fontSize: 16, height: 1.5, color: t.tx));
+    return SelectableText.rich(
+      TextSpan(children: spans),
+      textDirection: _messageDirection(text),
+      style: TextStyle(fontSize: 16, height: 1.5, color: t.tx),
+    );
   }
 }
 
@@ -664,6 +748,8 @@ class _ComposerState extends State<_Composer> {
             minLines: 1,
             maxLines: 4,
             maxLength: 2000,
+            autocorrect: false,
+            textDirection: _messageDirection(widget.controller.text),
             textInputAction: TextInputAction.send,
             onSubmitted: (_) => canSend ? widget.onSend() : null,
             style: const TextStyle(fontSize: 15.5),

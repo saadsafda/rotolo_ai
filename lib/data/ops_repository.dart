@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_chat.dart';
 import '../models/assistant_email.dart';
 import '../models/payment.dart';
 import '../models/report.dart';
@@ -55,6 +56,10 @@ abstract class OpsRepository {
   /// "Ask your portfolio": grounded answer over the user's own data.
   /// Throws [AssistantFailure] with a readable message.
   Future<AssistantReply> ask(List<ChatTurn> conversation);
+
+  Future<List<ChatSummary>> listAssistantChats();
+  Future<SavedChat> getAssistantChat(String id);
+  Future<SavedChat> saveAssistantChat(ChatSummary chat, List<ChatEntry> entries, {int? version});
 
   /// Sends one reviewed email. [requestId] is reused for an identical retry.
   Future<AssistantEmailReceipt> sendAssistantEmail(AssistantEmail email, {required String requestId});

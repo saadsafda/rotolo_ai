@@ -1,104 +1,176 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/assistant.dart';
+import '../models/assistant_chat.dart';
 import 'providers.dart';
 
-class ChatEntry {
-  const ChatEntry({
-    required this.id,
-    required this.user,
-    required this.text,
-    required this.at,
-    this.reply,
-    this.error,
-    this.pending = false,
-    this.feedback = 0,
+class AssistantWorkspace {
+  const AssistantWorkspace({
+    required this.userId,
+    this.history = const [],
+    this.chat,
+    this.saving = false,
+    this.saveError,
   });
 
-  final int id;
-  final bool user;
-  final String text;
-  final DateTime at;
-  final AssistantReply? reply;
-  final String? error;
-  final bool pending;
-  final int feedback; // 1 helpful, -1 not helpful (kept on this device)
+  final String userId;
+  final List<ChatSummary> history;
+  final SavedChat? chat;
+  final bool saving;
+  final String? saveError;
 
-  ChatEntry copyWith({AssistantReply? reply, String? error, bool? pending, int? feedback}) => ChatEntry(
-        id: id,
-        user: user,
-        text: text,
-        at: at,
-        reply: reply ?? this.reply,
-        error: error ?? this.error,
-        pending: pending ?? this.pending,
-        feedback: feedback ?? this.feedback,
-      );
+  List<ChatEntry> get entries => chat?.entries ?? const [];
+  bool get busy => saving || entries.any((entry) => entry.pending);
 }
 
-/// Conversations per signed-in user, kept in memory for this app session.
-/// Keyed by user id instead of watching the session, so an account switch can
-/// never show someone else's thread or rebuild providers mid-frame.
-class AssistantThreads extends Notifier<Map<String, List<ChatEntry>>> {
-  int _seq = 0;
-
+class AssistantThreads extends AsyncNotifier<AssistantWorkspace?> {
   @override
-  Map<String, List<ChatEntry>> build() => const {};
+  Future<AssistantWorkspace?> build() async {
+    final user = ref.watch(sessionProvider);
+    if (user == null) return null;
+    final repo = ref.watch(repositoryProvider);
+    final history = await repo.listAssistantChats();
+    final latest = history.isEmpty ? null : await repo.getAssistantChat(history.first.id);
+    return AssistantWorkspace(userId: user.id, history: history, chat: latest);
+  }
 
-  List<ChatEntry> _thread(String uid) => state[uid] ?? const [];
-  void _set(String uid, List<ChatEntry> t) => state = {...state, uid: t};
+  AssistantWorkspace? _current(String uid) {
+    if (!ref.mounted || ref.read(sessionProvider)?.id != uid) return null;
+    final current = state.asData?.value;
+    return current?.userId == uid ? current : null;
+  }
 
-  bool isBusy(String uid) => _thread(uid).any((e) => e.pending);
+  bool isBusy(String uid) => _current(uid)?.busy ?? true;
 
-  void addEmailReceipt(String uid, String message) {
-    _set(uid, [..._thread(uid), ChatEntry(id: ++_seq, user: false, text: message, at: ref.read(clockProvider)())]);
+  void newChat(String uid) {
+    final current = _current(uid);
+    if (current == null || current.busy) return;
+    state = AsyncData(AssistantWorkspace(userId: uid, history: current.history));
+  }
+
+  Future<void> openChat(String uid, String id) async {
+    final current = _current(uid);
+    if (current == null || current.busy || current.chat?.summary.id == id && current.saveError == null) return;
+    state = AsyncData(AssistantWorkspace(userId: uid, history: current.history, chat: current.chat, saving: true));
+    try {
+      final chat = await ref.read(repositoryProvider).getAssistantChat(id);
+      if (_current(uid) == null) return;
+      state = AsyncData(AssistantWorkspace(userId: uid, history: current.history, chat: chat));
+    } catch (_) {
+      if (_current(uid) == null) return;
+      state = AsyncData(AssistantWorkspace(
+        userId: uid, history: current.history, chat: current.chat, saveError: 'Could not open that chat. Try opening it again.',
+      ));
+    }
+  }
+
+  Future<void> addEmailReceipt(String uid, String message) async {
+    final current = _current(uid);
+    if (current == null || current.busy) return;
+    final entry = ChatEntry(
+      id: (current.entries.lastOrNull?.id ?? 0) + 1,
+      user: false, text: message, at: ref.read(clockProvider)(),
+    );
+    await _save(uid, _draft(current, [...current.entries, entry]));
   }
 
   Future<void> send(String uid, String text) async {
-    final q = text.trim();
-    if (q.isEmpty || isBusy(uid)) return;
+    final current = _current(uid);
+    final question = text.trim();
+    if (current == null || current.busy || question.isEmpty) return;
+    final nextId = (current.entries.lastOrNull?.id ?? 0) + 1;
     final now = ref.read(clockProvider)();
-    final question = ChatEntry(id: ++_seq, user: true, text: q, at: now);
-    final answer = ChatEntry(id: ++_seq, user: false, text: '', at: now, pending: true);
-    _set(uid, [..._thread(uid), question, answer]);
-    await _answer(uid, answer.id);
+    final pending = ChatEntry(id: nextId + 1, user: false, text: '', at: now, pending: true);
+    final chat = _draft(current, [
+      ...current.entries,
+      ChatEntry(id: nextId, user: true, text: question, at: now),
+      pending,
+    ]);
+    await _save(uid, chat);
+    await _answer(uid, chat.summary.id, pending);
   }
 
   Future<void> retry(String uid, int answerId) async {
-    final t = _thread(uid);
-    final i = t.indexWhere((e) => e.id == answerId);
-    if (i < 0 || isBusy(uid)) return;
-    _set(uid, [...t.take(i), ChatEntry(id: answerId, user: false, text: '', at: ref.read(clockProvider)(), pending: true), ...t.skip(i + 1)]);
-    await _answer(uid, answerId);
+    final current = _current(uid);
+    if (current == null || current.busy) return;
+    final index = current.entries.indexWhere((entry) => entry.id == answerId && entry.error != null);
+    if (index < 1 || !current.entries[index - 1].user) return;
+    final pending = ChatEntry(id: answerId, user: false, text: '', at: ref.read(clockProvider)(), pending: true);
+    final entries = [...current.entries]..[index] = pending;
+    final chat = _draft(current, entries);
+    await _save(uid, chat);
+    await _answer(uid, chat.summary.id, pending);
   }
 
-  Future<void> _answer(String uid, int answerId) async {
-    // Conversation up to (not including) the pending answer; failed turns are left out.
+  Future<void> retrySave(String uid) async {
+    final current = _current(uid);
+    final chat = current?.chat;
+    if (chat != null && !current!.busy) await _save(uid, chat);
+  }
+
+  SavedChat _draft(AssistantWorkspace current, List<ChatEntry> entries) {
+    final firstQuestion = entries.where((entry) => entry.user).firstOrNull?.text ?? 'Email activity';
+    return SavedChat(
+      summary: ChatSummary(
+        current.chat?.summary.id ?? const Uuid().v4(),
+        String.fromCharCodes(firstQuestion.replaceAll(RegExp(r'\s+'), ' ').runes.take(160)),
+        ref.read(clockProvider)(),
+      ),
+      version: current.chat?.version ?? 0,
+      entries: entries,
+    );
+  }
+
+  Future<void> _save(String uid, SavedChat draft) async {
+    final current = _current(uid);
+    if (current == null) return;
+    state = AsyncData(AssistantWorkspace(userId: uid, history: current.history, chat: draft, saving: true));
+    try {
+      final saved = await ref.read(repositoryProvider).saveAssistantChat(
+        draft.summary, draft.entries, version: draft.version == 0 ? null : draft.version,
+      );
+      if (_current(uid)?.chat?.summary.id != draft.summary.id) return;
+      final history = [saved.summary, ...current.history.where((item) => item.id != saved.summary.id)];
+      final active = SavedChat(summary: saved.summary, version: saved.version, entries: draft.entries);
+      state = AsyncData(AssistantWorkspace(userId: uid, history: history, chat: active));
+    } catch (error) {
+      if (_current(uid)?.chat?.summary.id != draft.summary.id) return;
+      state = AsyncData(AssistantWorkspace(
+        userId: uid, history: current.history, chat: draft,
+        saveError: error is AssistantFailure ? error.message : 'This chat could not be saved. Try saving again.',
+      ));
+    }
+  }
+
+  Future<void> _answer(String uid, String chatId, ChatEntry pending) async {
+    final current = _current(uid);
+    if (current?.chat?.summary.id != chatId) return;
     final history = <ChatTurn>[
-      for (final e in _thread(uid).takeWhile((e) => e.id != answerId))
-        if (e.user)
-          ChatTurn('user', e.text)
-        else if (e.reply != null)
-          ChatTurn('assistant', e.reply!.answer),
+      for (final entry in current!.entries.takeWhile((entry) => entry.id != pending.id))
+        if (entry.user)
+          ChatTurn('user', entry.text)
+        else if (entry.reply != null)
+          ChatTurn('assistant', entry.reply!.answer, contextTools: entry.reply!.contextTools),
     ];
     ChatEntry done;
-    final pending = _thread(uid).firstWhere((e) => e.id == answerId);
     try {
       final reply = await ref.read(repositoryProvider).ask(history);
-      done = ChatEntry(id: answerId, user: false, text: reply.answer, at: ref.read(clockProvider)(), reply: reply);
-    } on AssistantFailure catch (e) {
-      done = ChatEntry(id: answerId, user: false, text: '', at: pending.at, error: e.message);
-    } catch (_) {
-      done = ChatEntry(id: answerId, user: false, text: '', at: pending.at, error: 'The assistant could not answer right now. Try again.');
+      if (_current(uid)?.chat?.summary.id != chatId) return;
+      done = ChatEntry(id: pending.id, user: false, text: reply.answer, at: ref.read(clockProvider)(), reply: reply);
+    } catch (error) {
+      done = ChatEntry(
+        id: pending.id, user: false, text: '', at: pending.at,
+        error: error is AssistantFailure ? error.message : 'The assistant could not answer right now. Try again.',
+      );
     }
-    _set(uid, [for (final e in _thread(uid)) e.id == answerId ? done : e]);
+    final latest = _current(uid);
+    if (latest?.chat?.summary.id != chatId) return;
+    await _save(uid, _draft(latest!, [
+      for (final entry in latest.entries) entry.id == pending.id ? done : entry,
+    ]));
   }
-
-  void setFeedback(String uid, int id, int value) =>
-      _set(uid, [for (final e in _thread(uid)) e.id == id ? e.copyWith(feedback: e.feedback == value ? 0 : value) : e]);
-
-  void clear(String uid) => _set(uid, const []);
 }
 
 final assistantThreadsProvider =
-    NotifierProvider<AssistantThreads, Map<String, List<ChatEntry>>>(AssistantThreads.new);
+    AsyncNotifierProvider<AssistantThreads, AssistantWorkspace?>(AssistantThreads.new);

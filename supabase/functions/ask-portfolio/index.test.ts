@@ -14,7 +14,7 @@ const ask = (text: string, auth = "Bearer user-jwt") =>
     body: JSON.stringify({ messages: [{ role: "user", text }] }) });
 
 /// Capture the model request and all caller-scoped reads.
-function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] }, opts: { authOk?: boolean; sections?: any[] } = {}) {
+function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] }, opts: { authOk?: boolean; sections?: any[]; history?: any[]; historyQueries?: string[] } = {}) {
   let step = 0;
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -25,7 +25,13 @@ function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] 
       const path = url.slice("https://db.test/rest/v1/".length);
       if (path.startsWith("profiles")) return Response.json([{ id: "u1", active: true }]);
       if (path.startsWith("reports")) {
-        assert(new URL(url).searchParams.get("data_mode") === "eq.live", "signed-in assistant must only query live reports");
+        const params = new URL(url).searchParams;
+        assert(params.get("data_mode") === "eq.live", "signed-in assistant must only query live reports");
+        if (params.get("report_sections.source") === "eq.time_doctor") {
+          opts.historyQueries?.push(params.get("report_sections.payload->>work_date") ?? "");
+          assert(params.get("report_sections.data_mode") === "eq.live", "only live Time Doctor sections");
+          return Response.json(opts.history ?? []);
+        }
         return Response.json([{ ...report, report_sections: opts.sections ?? report.report_sections }]);
       }
       return Response.json([]);
@@ -38,6 +44,101 @@ function fakeHttp(openaiSteps: any[], seen: { openai: any[]; restAuth: string[] 
   }) as typeof fetch;
 }
 const call = (name: string, args: unknown = {}) => ({ role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name, arguments: JSON.stringify(args) } }] });
+
+function afterTimeDoctor(text: string) {
+  return new Request("https://fn.test/ask-portfolio", {
+    method: "POST", headers: { authorization: "Bearer user-jwt", "content-type": "application/json" },
+    body: JSON.stringify({ messages: [
+      { role: "user", text: "Show team hours" },
+      { role: "assistant", text: "Time Doctor recorded 8 hours." },
+      { role: "user", text },
+    ] }),
+  });
+}
+
+Deno.test("all cancellation leads from FUB return only cancelled deals, even after Time Doctor", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const section = report.report_sections.find((s: any) => s.source === "fub_deals");
+  const cancelled = section.payload.deals.find((d: any) => d.classification === "cancelled");
+  const deals = [
+    ...section.payload.deals.filter((d: any) => d.classification !== "cancelled"),
+    ...Array.from({ length: 17 }, (_, i) => ({ ...cancelled, deal_id: 100 + i, property: "Test cancelled deal " + i })),
+  ];
+  const sections = report.report_sections.map((s: any) => s === section ? { ...s, payload: { ...s.payload, deals } } : s);
+  const response = await handle(afterTimeDoctor("give me all cancellation lead from fub"), env(), fakeHttp([
+    call("get_team_hours"),
+  ], seen, { sections }));
+  const body = await response.json();
+  assert(body.answer.includes("17 deals marked cancelled"), "plain-English answer gives the cancellation count");
+  assert(body.blocks[0].items.length === 17, "all matches are returned, including those beyond the usual list limit");
+  assert(body.blocks[0].items.every((item: any) => item.title.startsWith("Test cancelled deal")), "only cancelled deals");
+  assert(body.sources.length === 1 && body.sources[0].kind === "deal", "no Time Doctor data");
+  assert(seen.openai.length === 0, "unambiguous cancellation lookup skips model routing");
+});
+
+Deno.test("new source excludes prior questions and unrelated model tool calls", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const calls = [...call("get_team_hours").tool_calls, ...call("list_deals", { filter: "open" }).tool_calls];
+  const body = await (await handle(
+    afterTimeDoctor("Could you check cancellation deals recorded in FUB?"),
+    env(), fakeHttp([{ tool_calls: calls }], seen),
+  )).json();
+  assert(body.answer.includes("deal marked cancelled"), "uses the requested cancellation filter");
+  assert(body.sources.length === 1 && body.sources[0].kind === "deal", "ignores Time Doctor tool call");
+  assert(seen.openai[0].messages.filter((m: any) => m.role === "user").length === 1, "standalone FUB query has no previous turns");
+});
+
+Deno.test("cancelled lookup respects restricted and empty FUB sections", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const fub = report.report_sections.find((s: any) => s.source === "fub_deals");
+  const empty = { ...fub, payload: { ...fub.payload, deals: fub.payload.deals.filter((d: any) => d.classification !== "cancelled") } };
+  const noAccess = await (await handle(ask("Show canceled deals"), env(), fakeHttp([], seen, { sections: [] }))).json();
+  const zero = await (await handle(ask("Show canceled deals"), env(), fakeHttp([], seen, { sections: [empty] }))).json();
+  assert(noAccess.answer.includes("not available") && noAccess.blocks.length === 0, "restricted data is not treated as zero");
+  assert(zero.answer.includes("no deals marked cancelled") && zero.sources[0].kind === "deal", "zero in a visible report has a clear answer");
+});
+
+Deno.test("a vague follow-up asks for a person rather than repeating the team total", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const body = await (await handle(afterTimeDoctor("What about him?"), env(), fakeHttp([call("get_team_hours")], seen))).json();
+  assert(body.answer === "Who do you mean? Please give me their name." && body.blocks.length === 0, "clarification without irrelevant hours");
+});
+
+Deno.test("saved lookup criteria resolve a follow-up without sending saved answers to the model", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("get_team_hours", { user: "Alpha" })], seen);
+  const askWithHistory = (messages: unknown[]) => new Request("https://fn.test/ask-portfolio", {
+    method: "POST", headers: { authorization: "Bearer user-jwt" }, body: JSON.stringify({ messages }),
+  });
+  const original = await (await handle(ask("Give me all cancellation leads from FUB"), env(), http)).json();
+  const turns = [
+    { role: "user", text: "Give me all cancellation leads from FUB" },
+    { role: "assistant", text: "Private reply with a property address", context_tools: original.context_tools },
+  ];
+  const count = await (await handle(askWithHistory([...turns, { role: "user", text: "How many of those?" }]), env(), http)).json();
+  assert(count.answer === original.answer && count.sources[0].kind === "deal", "follow-up reuses the saved cancellation lookup");
+  const newQuestion = await (await handle(askWithHistory([...turns, { role: "user", text: "And what about Alpha's Time Doctor hours?" }]), env(), http)).json();
+  assert(newQuestion.sources[0].kind === "time", "explicit new source takes priority over saved history");
+  assert(!JSON.stringify(seen.openai).includes("Private reply"), "old answer content is never sent to OpenAI");
+  assert(!JSON.stringify(seen.openai).includes("cancellation leads from FUB"), "irrelevant prior question is omitted");
+});
+
+Deno.test("named follow-up carries forward the topic and prefers the new person", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([{ tool_calls: [...call("get_team_hours", { user: "Bravo" }).tool_calls, ...call("list_deals").tool_calls] }], seen);
+  const request = new Request("https://fn.test/ask-portfolio", {
+    method: "POST", headers: { authorization: "Bearer user-jwt" },
+    body: JSON.stringify({ messages: [
+      { role: "user", text: "How many hours did Alpha track?" },
+      { role: "assistant", text: "Previously displayed private hours", context_tools: [{ name: "get_team_hours", args: { user: "Alpha" } }] },
+      { role: "user", text: "And what about Bravo?" },
+    ] }),
+  });
+  const body = await (await handle(request, env(), http)).json();
+  assert(body.answer.includes("Bravo") && !body.answer.includes("Alpha"), "new person replaces previous person");
+  assert(body.sources.length === 1 && body.sources[0].kind === "time", "the follow-up stays in Time Doctor");
+  assert(JSON.stringify(seen.openai).includes("prior_lookup_criteria") && !JSON.stringify(seen.openai).includes("Previously displayed private hours"), "only earlier question and lookup are forwarded");
+});
 
 Deno.test("grounded answer: tool cards, sources, user-scoped reads", async () => {
   const seen = { openai: [] as any[], restAuth: [] as string[] };
@@ -117,4 +218,137 @@ Deno.test("Gmail coverage and a missing staff member get distinct, scoped answer
   const time = await (await handle(ask("How many hours did Charlie track?"), env(), http)).json();
   assert(gmail.sources[0].kind === "email" && gmail.answer.includes("more results"), "partial Gmail coverage is explicit");
   assert(time.sources[0].kind === "time" && time.answer.includes("didn’t return tracked hours"), "named missing staff does not get the team total");
+});
+
+const historyRequest = (messages: unknown[]) => new Request("https://fn.test/ask-portfolio", {
+  method: "POST", headers: { authorization: "Bearer user-jwt" }, body: JSON.stringify({ messages }),
+});
+
+const translation = (...translations: string[]) => ({ content: JSON.stringify({ translations }) });
+
+Deno.test("Spanish answer and count-only follow-up keep the verified FUB count private", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const first = "La cuenta verificada de Follow Up Boss es {{slot_0}}.";
+  const section = report.report_sections.find((s: any) => s.source === "fub_deals");
+  const cancelled = section.payload.deals.find((d: any) => d.classification === "cancelled");
+  const sections = [{ ...section, payload: { deals: [{ ...cancelled, property: "Private record" }, cancelled] } }];
+  const http = fakeHttp([call("list_deals", { filter: "open" }), translation(first), translation("Hay {{slot_0}} negocios cancelados.")], seen, { sections });
+  const question = "Total de negocios cancelados en FUB";
+  const original = await (await handle(ask(question), env(), http)).json();
+  const body = await (await handle(historyRequest([
+    { role: "user", text: question },
+    { role: "assistant", text: original.answer, context_tools: original.context_tools },
+    { role: "user", text: "Solo el total" },
+  ]), env(), http)).json();
+  assert(original.answer === "La cuenta verificada de Follow Up Boss es 2.", "translated original with numeric value restored");
+  assert(body.answer === "Hay 2 negocios cancelados." && !body.blocks.length, "Spanish follow-up carries the cancellation filter and gives just the count");
+  const translatedInput = JSON.stringify(seen.openai[1]);
+  assert(!translatedInput.includes("Private record") && !translatedInput.includes("2 deals"), "translation receives templates without report values");
+});
+
+Deno.test("a fresh chat asks what to count in the language requested", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const body = await (await handle(ask("Solo el total"), env(), fakeHttp([
+    translation("¿Qué registros quieres que cuente?"),
+  ], seen))).json();
+  assert(body.answer === "¿Qué registros quieres que cuente?" && body.context_tools.length === 0, "no inherited topic or generic help");
+});
+
+Deno.test("a clarification can be answered with just the missing detail", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([
+    call("clarify_request", { question: "Which staff member’s hours would you like to see?" }),
+    call("get_team_hours", { user: "Alpha" }),
+  ], seen);
+  const question = "Can you tell me how long that person worked?";
+  const first = await (await handle(ask(question), env(), http)).json();
+  const next = await (await handle(historyRequest([
+    { role: "user", text: question },
+    { role: "assistant", text: first.answer },
+    { role: "user", text: "Alpha" },
+  ]), env(), http)).json();
+  assert(first.answer.startsWith("Which staff member"), "specific clarification");
+  assert(next.answer.includes("Alpha") && next.sources[0].kind === "time", "short answer continues the topic");
+  assert(JSON.stringify(seen.openai[1]).includes(question), "original question is available to resolve the short answer");
+});
+
+Deno.test("an explicit reply language protects computed numbers and does not expose record data", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("list_tasks", { filter: "overdue" }),
+    translation("مرمت کے {{slot_0}} کام مقررہ وقت سے گزر چکے ہیں۔")], seen);
+  const body = await (await handle(ask("How many DoorLoop maintenance tasks are overdue? Answer in Urdu."), env(), http)).json();
+  assert(body.answer.includes("مرمت کے 2 کام"), "translated in Urdu");
+  assert(!JSON.stringify(seen.openai[1]).includes("tasks · 2"), "translation has no computed value");
+  const invalid = await (await handle(ask("Overdue tasks in DoorLoop. Answer in Urdu."), env(),
+    fakeHttp([call("list_tasks", { filter: "overdue" }), translation("مرمت 99")], seen))).json();
+  assert(invalid.answer.includes("· 2") && !invalid.answer.includes("99"), "bad translation cannot replace the actual count");
+});
+
+const timeSnapshot = (workDate: string, hours: number) => {
+  const time = report.report_sections.find((s: any) => s.source === "time_doctor");
+  return { id: "history-" + workDate, report_sections: [{ ...time, status: "complete",
+    payload: { work_date: workDate, scope: { intended: [{ name: "Alpha" }] },
+      users: [{ name: "Alpha", tracked_sec: hours * 3600 }], team_total: { tracked_sec: hours * 3600 } },
+  }] };
+};
+
+Deno.test("historical date takes priority over latest report and any wrong date proposed by the model", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const historyQueries: string[] = [];
+  const http = fakeHttp([call("get_team_hours", { date: "2025-11-02" })], seen, {
+    history: [timeSnapshot("2025-11-02", 55), timeSnapshot("2025-11-01", 7)], historyQueries,
+  });
+  const body = await (await handle(ask("How many hours did the team work in Time Doctor on November 1, 2025?"), env(), http)).json();
+  assert(body.answer.includes("7.0 hours for the team on 2025-11-01") && !body.answer.includes("55"), "the exact work date wins");
+  assert(historyQueries.length === 1 && historyQueries[0] === "in.(2025-11-01)", "database reads only the requested date");
+  assert(body.sources[0].route === "/reports/history-2025-11-01", "source points to historical report");
+  assert(seen.restAuth.every(auth => auth === "Bearer user-jwt"), "historical lookup respects caller permissions");
+});
+
+Deno.test("a missing date is unavailable and a range counts only dates with confirmed totals", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("get_team_hours"), call("get_team_hours", { date: "2025-11-01", through: "2025-11-03" })], seen, {
+    history: [timeSnapshot("2025-11-03", 6), timeSnapshot("2025-11-01", 0)],
+  });
+  const missing = await (await handle(ask("How many hours did the team work in Time Doctor on 2025-11-02?"), env(), http)).json();
+  const range = await (await handle(ask("Show Time Doctor team hours from 2025-11-01 to 2025-11-03."), env(), http)).json();
+  assert(missing.answer.includes("no saved Time Doctor report available for 2025-11-02") && !missing.blocks.length, "does not pass off current hours or a zero");
+  assert(range.answer.includes("6.0 team hours") && range.answer.includes("2 of 3 days"), "confirmed zeros are counted, missing days are explicit");
+  assert(range.blocks[0].items[1].trailing === "Unavailable", "day-level coverage identifies the gap");
+});
+
+Deno.test("changing the staff name in a Time Doctor follow-up preserves the saved work date", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("get_team_hours", { user: "Alpha" })], seen, { history: [timeSnapshot("2025-11-01", 7)] });
+  const body = await (await handle(historyRequest([
+    { role: "user", text: "Time Doctor team hours on 2025-11-01" },
+    { role: "assistant", text: "Reply", context_tools: [{ name: "get_team_hours", args: { date: "2025-11-01" } }] },
+    { role: "user", text: "And what about Alpha?" },
+  ]), env(), http)).json();
+  assert(body.answer.includes("Alpha tracked 7.0 h on 2025-11-01"), "subject changes while work date stays in scope");
+});
+
+Deno.test("reply language is part of the lookup, with a safe maintenance fallback if routing stalls", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const body = await (await handle(ask("How many overdue maintenance tasks are in DoorLoop? Answer in Urdu."), env(),
+    fakeHttp([{ content: null }, translation("مرمت کے {{slot_0}} کام تاخیر کا شکار ہیں۔")], seen))).json();
+  assert(body.answer.includes("مرمت کے 2 کام") && body.sources[0].kind === "tasks", "language change keeps the requested lookup");
+  const tasks = seen.openai[0].tools.find((item: any) => item.function.name === "list_tasks");
+  assert(tasks.function.parameters.properties.reply_language, "one data tool call also carries the requested language");
+});
+
+Deno.test("ambiguous numeric Time Doctor date is clarified before querying hours", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const body = await (await handle(ask("How many hours did the team work in Time Doctor on 03/04/2025?"), env(),
+    fakeHttp([], seen))).json();
+  assert(body.answer.startsWith("Which date did you mean") && !body.context_tools.length, "no unsupported date guess or latest result");
+});
+
+Deno.test("native-script Time Doctor question with reply language uses exact dates", async () => {
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const body = await (await handle(ask("2026-11-24 کو Time Doctor میں ٹیم نے کتنے گھنٹے کام کیا؟"), env(), fakeHttp([
+    call("get_team_hours", { reply_language: "ur", date: "2026-11-25" }),
+    translation("Time Doctor کے مطابق ٹیم نے {{slot_1}} کو {{slot_0}} گھنٹے کام کیا۔"),
+  ], seen, { history: [timeSnapshot("2026-11-24", 7)] }))).json();
+  assert(body.answer.includes("2026-11-24 کو 7.0 گھنٹے") && body.context_tools[0].args.date === "2026-11-24", "Urdu keeps the exact work date and verified hours");
 });

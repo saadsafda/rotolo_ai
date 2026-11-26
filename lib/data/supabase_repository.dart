@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/report_push.dart';
 import '../models/app_user.dart';
 import '../models/assistant.dart';
+import '../models/assistant_chat.dart';
 import '../models/assistant_email.dart';
 import '../models/json.dart';
 import '../models/payment.dart';
@@ -451,10 +452,42 @@ class SupabaseOpsRepository implements OpsRepository {
   // ───────────── Assistant ─────────────
 
   @override
+  Future<List<ChatSummary>> listAssistantChats() async {
+    final chats = <ChatSummary>[];
+    const pageSize = 100;
+    for (var offset = 0;; offset += pageSize) {
+      final rows = await _db.from('assistant_chats').select('id,title,updated_at')
+          .order('updated_at').order('id').range(offset, offset + pageSize - 1);
+      chats.addAll(rows.map(ChatSummary.fromJson));
+      if (rows.length < pageSize) return chats;
+    }
+  }
+
+  @override
+  Future<SavedChat> getAssistantChat(String id) async {
+    final row = await _db.from('assistant_chats').select('id,title,updated_at,version,entries').eq('id', id).single();
+    return SavedChat.fromJson(row);
+  }
+
+  @override
+  Future<SavedChat> saveAssistantChat(ChatSummary chat, List<ChatEntry> entries, {int? version}) async {
+    final values = {'title': chat.title, 'entries': [for (final entry in entries) entry.toJson()]};
+    const columns = 'id,title,updated_at,version,entries';
+    final table = _db.from('assistant_chats');
+    final row = version == null
+        ? await table.insert({'id': chat.id, ...values}).select(columns).single()
+        : await table.update({
+            ...values, 'version': version + 1, 'updated_at': chat.updatedAt.toUtc().toIso8601String(),
+          }).eq('id', chat.id).eq('version', version).select(columns).maybeSingle();
+    if (row == null) throw const AssistantFailure('This chat changed on another device. Reopen it from Chat history to continue.');
+    return SavedChat.fromJson(row);
+  }
+
+  @override
   Future<AssistantReply> ask(List<ChatTurn> conversation) async {
     try {
       final res = await _db.functions.invoke('ask-portfolio', body: {
-        'messages': [for (final t in conversation) t.toJson()],
+        'messages': [for (final t in conversation.skip(conversation.length > 12 ? conversation.length - 12 : 0)) t.toJson()],
       });
       return AssistantReply.fromJson(asMap(res.data));
     } on FunctionException catch (e) {
