@@ -23,6 +23,7 @@ const json = (body: unknown, status = 200) =>
 const SYSTEM = `Choose read-only tools for the final user message, which may be in any language. FUB means Follow Up Boss. Cancellation leads are deals marked cancelled.
 Earlier questions and lookup criteria are context only. Use them to resolve a follow-up, including a short reply to a clarification or a different-language follow-up. A clearly new topic, person, property or period takes priority. In a mixed request, only look up what the user actually asks for.
 Include reply_language when the latest question is in a language other than English or requests a specific language. For a language-neutral reply like a person's name, keep the preceding question's language. When a needed detail or reference is genuinely ambiguous, call clarify_request with one short question in that language. Do not guess a person, result or date.
+For hours worked in DoorLoop or another named program, use Time Doctor app usage with the name of the app, not DoorLoop task records. If the user asks about a site during idle time, use idle_by_app to get daily site totals. Typos like "idel" mean idle. For questions about what someone did in DoorLoop, use DoorLoop records and do not equate an update or a task assignment with hours worked.
 For Time Doctor, resolve dates in the supplied business timezone using its current date. An exact day uses date only. A contiguous period uses date and through, inclusive. Do not substitute the latest report for a date or range. If a date format is ambiguous or the user asks for a comparison that cannot be represented as one period, ask what dates to check. Do not add a date for an ordinary latest-hours question or change a previously selected date without a reason.`;
 
 const clarifyTool = {
@@ -60,7 +61,17 @@ const toolGroups = [
   ["get_report_status"],
 ];
 
+function asksAboutAppTime(text: string): boolean {
+  return /\bdoor\s?loop\b/i.test(text) && /\b(?:track(?:ed)?|work(?:ed)?|hours?|idle|idel|time spent)\b/i.test(text) &&
+    !/\b(?:maintenance|rent|lease|payment|overdue)\b/i.test(text);
+}
+
+const idleByApp = (text: string) => /\b(?:idle|idel)\b/i.test(text) && /\b(?:site|sites|website|websites|app|apps|where|doorloop)\b/i.test(text);
+const appUsage = (text: string) => /\b(?:app|apps|site|sites|website|websites)\b/i.test(text) &&
+  /\b(?:track(?:ed|ing)?|time|use[ds]?|usage|hours?|idle|idel)\b/i.test(text);
+
 function namedSources(text: string): string[] {
+  if (asksAboutAppTime(text) || idleByApp(text) || appUsage(text)) return toolGroups[2];
   const categories = [
     fub,
     /\bdoor\s?loop\b/i,
@@ -235,7 +246,8 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
   const latest = messages.slice(0, -1);
   const explicitSource = namedSources(text);
   const wantsCount = restateCount.test(text) || countOnly.test(text);
-  const isFollowUp = followUp.test(text) || wantsCount;
+  const isFollowUp = followUp.test(text) || wantsCount ||
+    /^(?:where|which (?:site|website|app)|in doorloop|time on doorloop)\b/i.test(text);
   const previous = latest.findLast(message => message.role === "assistant")?.lookups ?? [];
   const relevantLookups = explicitSource.length ? previous.filter(item => explicitSource.includes(item.name)) : previous;
   const relatedTools = toolGroups.filter(group => relevantLookups.some(item => group.includes(item.name))).flat();
@@ -255,6 +267,13 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
     (!explicitSource.length && relevantLookups.some(item => item.name === "get_team_hours"));
   const dateMention = date != null || mentionsDate.test(text) || localizedDate.test(text);
   const hasDateRequest = timeContext && dateMention;
+  const asksForApps = asksAboutAppTime(text) || idleByApp(text) || appUsage(text);
+  const previousTime = historyLookups.find(item => item.name === "get_team_hours");
+  const namedMary = text.match(/\b(?:mary|marry)(?: dalipe)?\b/i)?.[0];
+  const appArgs = {
+    metric: idleByApp(text) ? "idle_by_app" : "app_usage",
+    ...(/\bdoor\s?loop\b/i.test(text) ? { app: "DoorLoop" } : {}),
+  };
 
   if (timeContext && ambiguousDate(text)) {
     reply = say`Which date did you mean? Please spell out the month or use year-month-day.`;
@@ -315,7 +334,10 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
     // The common report lookups can still respond if the model is unavailable.
   }
   if (!chosen.length && !reply && !clarification) {
-    if (hasDateRequest && date && /\bteam (?:hours|work|track|log)|\bhours did the team\b/i.test(text)) {
+    if (asksForApps && (namedMary || previousTime?.args.user || !hasDateRequest)) {
+      const user = namedMary ?? (isFollowUp ? previousTime?.args.user : undefined);
+      chosen = [{ name: "get_team_hours", args: { ...appArgs, ...(user ? { user } : {}) } }];
+    } else if (hasDateRequest && date && /\bteam (?:hours|work|track|log)|\bhours did the team\b/i.test(text)) {
       chosen = [{ name: "get_team_hours", args: { ...date } }];
     } else if (hasDateRequest) {
       reply = say`Which work date should I check in Time Doctor? You can give one date or a date range.`;
@@ -328,6 +350,9 @@ export async function handle(req: Request, env: Env = Deno.env, http: typeof fet
   const priorTime = historyLookups.find(item => item.name === "get_team_hours" && item.args.date);
   chosen = chosen.filter(item => {
     if (item.name !== "get_team_hours") return true;
+    if (asksForApps) Object.assign(item.args, appArgs);
+    if (!item.args.user && namedMary) item.args.user = namedMary;
+    if (!item.args.user && previousTime?.args.user && isFollowUp && asksForApps) item.args.user = previousTime.args.user;
     if (date) {
       item.args.date = date.date;
       if (date.through) item.args.through = date.through;

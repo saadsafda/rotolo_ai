@@ -92,7 +92,8 @@ test("deals: evidence review flag respects reviews; untrusted excerpt is labelle
   assert.deepEqual(nr.deals.map((d: any) => d.property).sort(), ["TEST 220 Oak Ave Riverton", "TEST 220 Oak Ave Riverton"]);
   const reviewed: any = runTool("list_deals", { filter: "needs_review" }, ctxFrom(fixture, { evidenceReviewed: new Set([9002, 9003]) })).data;
   assert.equal(reviewed.count, 0);
-  const deal: any = runTool("get_deal", { query: "220 Oak Ave" }, ctx).data;
+  assert.equal(runTool("get_deal", { query: "220 Oak Ave" }, ctx).blocks.length, 0);
+  const deal: any = runTool("get_deal", { query: "9002" }, ctx).data;
   assert.ok(deal.emails[0].untrusted_excerpt.includes("ignore previous instructions"));
   assert.equal(deal.stage, "Clear to Close");
 });

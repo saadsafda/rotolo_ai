@@ -194,6 +194,9 @@ if (td.error) {
     { work_date: td.reportDate || cfg.workDay, activity_status: td.activityStatus || 'recorded',
       scope: { intended: intended.map((u) => ({ id: u.id, name: u.name })), missing },
       users,
+      web_app_usage: (Array.isArray(td.webAppUsage) ? td.webAppUsage : [])
+        .filter(entry => users.some(user => user.user_id === entry.userId))
+        .map(entry => ({ user_id: entry.userId, status: entry.status, rows: entry.rows })),
       team_total: { tracked_sec: int(td.teamTotal?.trackedSec), active_sec: int(td.teamTotal?.activeSec),
         idle_sec: int(td.teamTotal?.idleSec), meeting_sec: int(td.teamTotal?.meetingSec) },
       gaps: (td.betweenBlockGaps || []).map((g) => ({ user_id: g.userId || null, start: iso(g.start), end: iso(g.end),

@@ -392,6 +392,76 @@
         1952,
         192
       ]
+    },
+    {
+      "name": "Time Doctor - Build Web App Requests",
+      "id": "7e0302e4-8c51-4a5f-a8fa-d42b38e929ab",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3296,
+        48
+      ],
+      "parameters": {
+        "jsCode": "const scope = $('Time Doctor - Build Daily Requests').first().json;\nconst cfg = $('Time Doctor - Report Parameters').first().json;\nconst tools = JSON.parse($('Time Doctor MCP - Discover Tools').first().json.mcpRaw).result.tools;\nconst available = tools.some(tool => tool.name === 'td_get_productivity_breakdown' && tool.annotations?.readOnlyHint === true);\nif (!available) return [{json: { skip: true }}];\nreturn scope.userIds.map((userId, index) => ({json: {\n  userId,\n  request: {\n    jsonrpc: '2.0', id: 1000 + index, method: 'tools/call',\n    params: { name: 'td_get_productivity_breakdown', arguments: {\n      from: cfg.reportDate, to: cfg.reportDate, timezone: cfg.timezone,\n      user: userId, groupBy: 'webApp', limit: 500,\n      fields: ['name', 'entity', 'trackedSec', 'activeSec', 'idleSec', 'idleMins'],\n    }},\n  },\n}}));\n"
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api2.timedoctor.com/api/2.0/mcp/mcp",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request ?? {jsonrpc:'2.0',id:0,method:'tools/list'}) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "mcpRaw"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "0774e546-63b9-45b2-8a30-2d0d3894b2e4",
+      "name": "Time Doctor MCP - Web App Usage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3536,
+        48
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "cgSlY0aGxpSYF4wW",
+          "name": "Time Doctor MCP - Client"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Time Doctor - Attach Web App Usage",
+      "id": "238bf21a-f298-4d45-a397-5d09deacacd5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3776,
+        48
+      ],
+      "parameters": {
+        "jsCode": "// These fields are per-app totals on the selected work date. No URLs, page titles,\n// screenshots, device locations, or reconstructed idle intervals are collected.\nconst number = value => Number.isSafeInteger(value) && value >= 0 ? value : null;\nconst label = value => {\n  if (typeof value !== 'string') return null;\n  const name = value.trim().replace(/[\\u0000-\\u001f\\u007f]/g, '');\n  if (!name || name.length > 180) return null;\n  if (/^(?:https?:\\/\\/|www\\.)|[/?#]/i.test(name)) {\n    try { return new URL(/^https?:\\/\\//i.test(name) ? name : 'https://' + name).hostname.toLowerCase(); }\n    catch { return null; }\n  }\n  return name;\n};\nconst requests = $('Time Doctor - Build Web App Requests').all().map(item => item.json);\nconst cfg = $('Time Doctor - Report Parameters').first().json;\nconst output = new Map(requests.filter(item => item.request).map(item => [item.request.id, { userId: item.userId, status: 'unavailable', rows: [] }]));\nconst seen = new Set();\nlet responses = [];\ntry { responses = $('Time Doctor MCP - Web App Usage').all(); } catch { /* optional tool is unavailable */ }\nfor (const item of responses) {\n  try {\n    const raw = String(item.json.mcpRaw ?? '');\n    const rpc = JSON.parse(raw.startsWith('{') ? raw : raw.split('\\n').filter(line => line.startsWith('data:')).at(-1)?.slice(5));\n    const row = output.get(rpc.id);\n    if (!row) continue;\n    if (seen.has(rpc.id)) { row.status = 'unavailable'; row.rows = []; continue; }\n    seen.add(rpc.id);\n    if (rpc.error || rpc.result?.isError) continue;\n    const data = rpc.result?.structuredContent ?? JSON.parse(rpc.result?.content?.find(item => item.type === 'text')?.text ?? '{}');\n    if (!['ok', 'no_data_in_range'].includes(data.status) || data.timezoneUsed !== cfg.timezone || !Array.isArray(data.data) ||\n        data.status === 'no_data_in_range' && data.data.length) continue;\n    row.rows = data.data.flatMap(source => {\n      const name = label(source.name);\n      const tracked = number(source.trackedSec);\n      return name && tracked != null ? [{\n        name, tracked_sec: tracked, active_sec: number(source.activeSec), idle_sec: number(source.idleSec),\n        idle_minutes: number(source.idleMins),\n      }] : [];\n    });\n    row.status = data.truncated || data.nextCursor || data.next_cursor || data.cursor ||\n      data.totalCount !== row.rows.length || row.rows.length !== data.data.length || data.timezoneWarning\n      ? 'partial' : 'complete';\n  } catch { /* usage collection is optional; the core activity report still works */ }\n}\nconst webAppUsage = [...output.values()];\nreturn [{json: {...$('Time Doctor - Validated Daily Report').first().json, webAppUsage}}];\n"
+      }
     }
   ],
   "connections": {
@@ -521,6 +591,39 @@
         [
           {
             "node": "Time Doctor - Report Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor - Validated Daily Report": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Build Web App Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor - Build Web App Requests": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor MCP - Web App Usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Doctor MCP - Web App Usage": {
+      "main": [
+        [
+          {
+            "node": "Time Doctor - Attach Web App Usage",
             "type": "main",
             "index": 0
           }

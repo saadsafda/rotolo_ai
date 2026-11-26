@@ -69,3 +69,20 @@ test('a new employee with no returned totals remains visible without invented ho
   assert.deepEqual(report.missingUsers, []);
   assert.match(report.timezoneWarnings[0], /New Employee has no returned activity totals/);
 });
+
+test('web usage binds responses to the requested staff and records gaps in coverage', () => {
+  const requests = [{userId: mary.id, request: {id: 1000}}, {userId: employee.id, request: {id: 1001}}];
+  const response = {mcpRaw: JSON.stringify({id: 1000, result: {structuredContent: {
+    status: 'ok', timezoneUsed: cfg.timezone, totalCount: 2, truncated: true,
+    data: [{name: 'https://app.doorloop.com/leases?private=x', trackedSec: 58, activeSec: 29, idleSec: 29, idleMins: 0}],
+  }}})};
+  const $ = name => ({
+    first: () => ({json: name.endsWith('Report Parameters') ? cfg : {reportDate: cfg.reportDate}}),
+    all: () => (name.includes('Build Web App Requests') ? requests : [response]).map(json => ({json})),
+  });
+  const report = new Function('$', code('Time Doctor - Attach Web App Usage'))($)[0].json;
+  assert.deepEqual(report.webAppUsage, [
+    {userId: mary.id, status: 'partial', rows: [{name: 'app.doorloop.com', tracked_sec: 58, active_sec: 29, idle_sec: 29, idle_minutes: 0}]},
+    {userId: employee.id, status: 'unavailable', rows: []},
+  ]);
+});

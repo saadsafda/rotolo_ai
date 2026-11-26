@@ -352,3 +352,32 @@ Deno.test("native-script Time Doctor question with reply language uses exact dat
   ], seen, { history: [timeSnapshot("2026-11-24", 7)] }))).json();
   assert(body.answer.includes("2026-11-24 کو 7.0 گھنٹے") && body.context_tools[0].args.date === "2026-11-24", "Urdu keeps the exact work date and verified hours");
 });
+
+Deno.test("Time Doctor details distinguish idle sites from tracked hours in DoorLoop", async () => {
+  const snapshot = timeSnapshot("2026-11-25", 8);
+  const time = snapshot.report_sections[0];
+  time.payload.users = [{ user_id: "mary", name: "Mary Dalipe", tracked_sec: 28_800, idle_sec: 450 }];
+  time.payload.web_app_usage = [{
+    user_id: "mary", status: "complete", rows: [
+      { name: "example.com", tracked_sec: 3000, active_sec: 2700, idle_sec: 300 },
+      { name: "app.doorloop.com", tracked_sec: 58, active_sec: 29, idle_sec: 29 },
+      { name: "notdoorloop.com", tracked_sec: 509, active_sec: 504, idle_sec: 5 },
+    ],
+  }];
+  const seen = { openai: [] as any[], restAuth: [] as string[] };
+  const http = fakeHttp([call("get_team_hours", { user: "Mary" }), call("get_team_hours")], seen, {
+    sections: [time], history: [snapshot],
+  });
+  const base = "How many hours did Marry work in DoorLoop on 2026-11-25?";
+  const first = await (await handle(ask(base), env(), http)).json();
+  const second = await (await handle(historyRequest([
+    { role: "user", text: base },
+    { role: "assistant", text: first.answer, context_tools: first.context_tools },
+    { role: "user", text: "Where was she during that idel time?" },
+  ]), env(), http)).json();
+  assert(first.answer.includes("58 s") && first.answer.includes("29 s of active time"), "DoorLoop activity is sourced from its domain only");
+  assert(first.blocks[0].items.length === 1 && first.sources[0].kind === "time", "website activity stays in Time Doctor");
+  assert(second.answer.includes("example.com") && second.answer.includes("5 min") && second.answer.includes("2026-11-25"),
+    "idle follow-up uses original staff and date");
+  assert(second.answer.includes("exact idle timestamps"), "does not infer an idle timestamp or physical location");
+});

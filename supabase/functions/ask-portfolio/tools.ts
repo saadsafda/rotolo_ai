@@ -9,6 +9,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { type Reply, combine, say } from "./reply.ts";
 import { type TimeWindow, datesIn } from "./time_window.ts";
+import { appActivity, duration, staffMatches, type TimeArgs } from "./time_activity.ts";
 
 export type Tone = "ac" | "ok" | "wa" | "er" | "na";
 export type Block =
@@ -218,11 +219,15 @@ function dealViews(ctx: Ctx) {
   }) };
 }
 
-function listDeals(ctx: Ctx, args: { filter?: string; query?: string }): ToolResult {
+function listDeals(ctx: Ctx, args: { filter?: string; query?: string; stage?: string; assignee?: string; pipeline?: string }): ToolResult {
   const v = dealViews(ctx);
   if (!v) return unavailable("Follow Up Boss deals");
   const f = args.filter ?? "open";
-  let deals = v.deals.filter((d: any) => args.query ? matches([d.property, d.pipeline, d.stage], args.query) : true);
+  let deals = v.deals.filter((d: any) =>
+    (!args.query || matches([d.property, d.pipeline, d.stage], args.query)) &&
+    (!args.stage || matches([d.stage], args.stage)) &&
+    (!args.pipeline || matches([d.pipeline], args.pipeline)) &&
+    (!args.assignee || (d.assigned_users ?? []).some((name: string) => staffMatches(name, args.assignee!))));
   deals = deals.filter((d: any) => f === "all" ? true
     : f === "cancelled" ? d.classification === "cancelled"
     : f === "needs_review" ? d.needsReview
@@ -255,7 +260,11 @@ function listDeals(ctx: Ctx, args: { filter?: string; query?: string }): ToolRes
 function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
   const v = dealViews(ctx);
   if (!v) return unavailable("Follow Up Boss deals");
-  const d = v.deals.find((x: any) => matches([x.property, x.pipeline], args.query ?? ""));
+  const query = args.query?.trim() ?? "";
+  const matched = v.deals.filter((x: any) => String(x.deal_id) === query || matches([x.property, x.stage, x.pipeline], query));
+  if (matched.length > 1) return { reply: say`More than one Follow Up Boss deal matches. Which deal should I open? You can give the property and stage or the deal ID.`,
+    data: {}, blocks: [], sources: [], amounts: [], suggestions: [] };
+  const d = matched[0];
   if (!d) return { data: { matches: 0, query: args.query }, blocks: [], sources: [], amounts: [], suggestions: ["Show open deals"] };
   const email = section(ctx, "email_evidence");
   const ev = email?.payload?.mailbox_verified === true ? email : null;
@@ -264,12 +273,22 @@ function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
   const emails = (ev?.payload?.items ?? []).filter((m: any) => m.deal_id === d.deal_id || ids.has(m.message_id));
   const blocks: Block[] = [{ type: "list", title: d.property, items: [
     { title: "Stage · Follow Up Boss", trailing: d.stage, tone: "ac" },
+    { title: "Pipeline", trailing: d.pipeline },
+    { title: "Assigned to", trailing: d.assigned_users?.join(", ") || "Not returned" },
+    { title: "Entered stage", trailing: d.stage_entered_at ? when(d.stage_entered_at, ctx.timezone) : "Not returned" },
+    ...(d.latest_linked_communication ? [{ title: "Latest linked communication",
+      subtitle: [d.latest_linked_communication.direction, d.latest_linked_communication.type, d.latest_linked_communication.person_name].filter(Boolean).join(" · "),
+      trailing: d.latest_linked_communication.date ? when(d.latest_linked_communication.date, ctx.timezone) : "Date unavailable",
+    }] : []),
     { title: "Projected close", trailing: d.projected_close_date ?? "Not set" },
     { title: "Days in stage", trailing: d.days_in_stage == null ? "Not returned" : String(d.days_in_stage) },
     ...((d.flags ?? []) as string[]).map((f) => ({ title: f, tone: "wa" as Tone })),
   ] }];
   if (emails.length) blocks.push({ type: "list", title: "Attorney email evidence (Gmail)", items: emails.slice(0, 5).map((m: any) => ({
-    title: m.subject, subtitle: (m.from ?? "") + " · " + (m.date ?? "").slice(0, 10),
+    title: m.subject, subtitle: [
+      [m.from, (m.date ?? "").slice(0, 10)].filter(Boolean).join(" · "),
+      m.mapping === "UNIQUE_PROPERTY_DEAL" ? m.excerpt : "Review needed to match this message to the property",
+    ].filter(Boolean).join("\n"),
     tone: m.mapping === "UNIQUE_PROPERTY_DEAL" ? "na" as Tone : "wa" as Tone })) });
   return {
     reply: d.projected_close_date
@@ -287,9 +306,24 @@ function dealDetails(ctx: Ctx, args: { query: string }): ToolResult {
   };
 }
 
-function emailEvidence(ctx: Ctx): ToolResult {
+function emailEvidence(ctx: Ctx, args: { query?: string }): ToolResult {
   const email = section(ctx, "email_evidence");
   if (!email || email.payload?.mailbox_verified !== true) return unavailable("Verified Gmail attorney evidence");
+  if (args.query) {
+    const matchesQuery = (row: any) => matches([row.subject, row.from, row.excerpt], args.query!);
+    const rows = (email.payload.items ?? []).filter(matchesQuery).sort((a: any, b: any) => String(b.date).localeCompare(String(a.date)));
+    return {
+      reply: rows.length ? say`Harry’s saved attorney email report contains ${rows.length} matching messages.`
+        : say`Harry’s saved attorney email report contains no matching messages.`,
+      data: {},
+      blocks: rows.length ? [{ type: "list", title: "Matching attorney emails", items: rows.slice(0, 10).map((row: any) => ({
+        title: row.subject,
+        subtitle: [[row.from, String(row.date ?? "").slice(0, 10)].filter(Boolean).join(" · "), row.excerpt].filter(Boolean).join("\n"),
+        trailing: row.mapping === "UNIQUE_PROPERTY_DEAL" ? "Matched" : "Match needs review",
+      })) }] : [],
+      sources: [reportSource(ctx, email, "email", "Harry’s attorney email evidence", "Gmail")], amounts: [], suggestions: [],
+    };
+  }
   const coverage = email.coverage ?? {};
   const verifiedReplies = (email.payload.deal_status ?? []).filter((deal: any) => deal.status === "ATTORNEY_REPLY_VERIFIED").length;
   const matched = typeof coverage.matched === "number" ? coverage.matched : "Not reported";
@@ -317,17 +351,37 @@ function emailEvidence(ctx: Ctx): ToolResult {
 }
 
 // ───────── tasks, team, payments, status ─────────
-function listTasks(ctx: Ctx, args: { filter?: string; property?: string }): ToolResult {
+function listTasks(ctx: Ctx, args: { filter?: string; property?: string; query?: string; priority?: string }): ToolResult {
   const s = section(ctx, "doorloop_tasks");
   if (!s) return unavailable("DoorLoop maintenance tasks");
-  const f = args.filter ?? "overdue";
+  const f = args.filter ?? (args.query ? "all" : "overdue");
   const tasks = (s.payload?.tasks ?? []).map((t: any) => {
     const review = ctx.taskReviews[t.task_id];
     const claimed = !!t.completion_claim?.claimed && review !== "verified_complete" && review !== "disputed";
     return { ...t, claimed, verified: review === "verified_complete", days: t.due_date ? daysBetween(t.due_date, ctx.today) : null };
-  }).filter((t: any) => args.property ? matches([t.property_name], args.property) : true)
+  }).filter((t: any) => (!args.property || matches([t.property_name], args.property)) &&
+    (!args.query || String(t.task_id) === args.query || matches([t.subject], args.query)) &&
+    (!args.priority || String(t.priority).toLowerCase() === args.priority.toLowerCase()))
     .filter((t: any) => f === "all" ? true : f === "overdue" ? t.is_overdue : f === "claimed" ? t.claimed : !t.completion_claim?.claimed)
     .sort((a: any, b: any) => (b.days ?? -999) - (a.days ?? -999));
+  if (args.query && tasks.length === 1) {
+    const task = tasks[0];
+    return {
+      reply: say`DoorLoop lists ${task.subject} as ${task.status}.`,
+      data: {},
+      blocks: [{ type: "list", title: task.subject, items: [
+        { title: "Property", trailing: task.property_name ?? "Not returned" },
+        { title: "DoorLoop status", trailing: task.status },
+        { title: "Priority", trailing: task.priority ?? "Not returned" },
+        { title: "Due date", trailing: task.due_date ?? "Not returned" },
+        { title: "Last updated", trailing: when(task.updated_at, ctx.timezone) },
+        { title: "Assigned to", trailing: task.assignees?.join(", ") || "Not returned" },
+        { title: "Completion review", trailing: task.verified ? "Verified" : task.claimed ? "DoorLoop reports complete · needs review" : "Pending" },
+      ] }],
+      sources: [reportSource(ctx, s, "tasks", "DoorLoop maintenance tasks", "Tasks")],
+      amounts: [], suggestions: [],
+    };
+  }
   const title = { overdue: "Overdue maintenance", claimed: "Completion claimed, not verified", open: "Open maintenance", all: "Maintenance tasks" }[f] ?? "Tasks";
   return {
     reply: combine({ template: title, slots: [] }, say` · ${tasks.length}.`),
@@ -343,7 +397,7 @@ function listTasks(ctx: Ctx, args: { filter?: string; property?: string }): Tool
   };
 }
 
-function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
+function teamHours(ctx: Ctx, args: TimeArgs): ToolResult {
   const s = section(ctx, "time_doctor");
   if (!s) return { ...unavailable("Time Doctor activity"), reply: say`Time Doctor hours are unavailable in the latest report.` };
   const users: any[] = s.payload?.users ?? [];
@@ -352,9 +406,8 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
   const h = (sec: number) => (sec / 3600).toFixed(1) + " h";
   const sources = [reportSource(ctx, s, "time", "Time Doctor daily activity", "Team")];
   if (args.user?.trim()) {
-    const words = norm(args.user).split(" ").filter(Boolean);
-    const staff = [...users, ...missing].filter((u) => words.length &&
-      words.every((word) => norm(u.name).split(" ").includes(word)));
+    const query = args.user;
+    const staff = [...users, ...missing].filter((u) => typeof u.name === "string" && staffMatches(u.name, query));
     if (staff.length !== 1) {
       return { reply: staff.length ? say`Several staff match. Which full name should I look up?`
         : say`I couldn’t find that staff member in this report’s Time Doctor scope for ${workDate}.`,
@@ -366,12 +419,17 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
       { title: "Active", seconds: user.active_sec },
       { title: "Idle", seconds: user.idle_sec },
     ];
-    const tracked = typeof user.tracked_sec === "number" ? h(user.tracked_sec) : null;
+    const metric = args.metric === "idle" || args.metric === "active" ? args.metric : "tracked";
+    const seconds = user[metric + "_sec"];
+    const reply = metric === "idle" ? say`Time Doctor recorded ${typeof seconds === "number" ? duration(seconds) : ""} with no keyboard or mouse input for ${user.name} on ${workDate}.`
+      : metric === "active" ? say`Time Doctor recorded ${typeof seconds === "number" ? duration(seconds) : ""} of active computer time for ${user.name} on ${workDate}.`
+      : seconds === 0 ? say`Time Doctor recorded no activity for ${user.name} on ${workDate}.`
+      : say`${user.name} tracked ${typeof seconds === "number" ? h(seconds) : ""} on ${workDate}.`;
     return {
-      reply: tracked == null ? say`Time Doctor didn’t return tracked hours for ${user.name} on ${workDate}.`
-        : user.tracked_sec === 0 ? say`Time Doctor recorded no activity for ${user.name} on ${workDate}.`
-        : say`${user.name} tracked ${tracked} on ${workDate}.`,
-      data: { tracked_seconds: user.tracked_sec, partial: s.status !== "complete" },
+      reply: typeof seconds === "number" ? reply : metric === "idle" ? say`Time Doctor didn’t return idle time for ${user.name} on ${workDate}.`
+        : metric === "active" ? say`Time Doctor didn’t return active time for ${user.name} on ${workDate}.`
+        : say`Time Doctor didn’t return tracked hours for ${user.name} on ${workDate}.`,
+      data: { tracked_seconds: seconds, partial: s.status !== "complete" },
       blocks: [{ type: "list", title: `${user.name} · ${workDate}`, items: metrics.map((m) => ({
         title: m.title, trailing: typeof m.seconds === "number" ? h(m.seconds) : "Not returned",
       })) }],
@@ -406,7 +464,7 @@ function teamHours(ctx: Ctx, args: { user?: string }): ToolResult {
   };
 }
 
-function historicalHours(ctx: Ctx, args: TimeWindow & { user?: string }): ToolResult {
+function historicalHours(ctx: Ctx, args: TimeWindow & TimeArgs): ToolResult {
   const dates = datesIn(args);
   const empty = (reply: Reply): ToolResult => ({ reply, data: {}, blocks: [], sources: [], amounts: [], suggestions: [] });
   if (!dates.length) return empty(say`Which dates should I check? Please give one date or a range of up to 31 days.`);
@@ -434,7 +492,9 @@ function historicalHours(ctx: Ctx, args: TimeWindow & { user?: string }): ToolRe
   }
   const hours = (usable.reduce((sum, day) => sum + (day.seconds ?? 0), 0) / 3600).toFixed(1);
   const tracked = args.user
-    ? say`Time Doctor recorded ${hours} hours for ${args.user} from ${args.date} through ${end}.`
+    ? args.metric === "idle" ? say`Time Doctor recorded ${hours} hours with no keyboard or mouse input for ${args.user} from ${args.date} through ${end}.`
+      : args.metric === "active" ? say`Time Doctor recorded ${hours} active hours for ${args.user} from ${args.date} through ${end}.`
+      : say`Time Doctor recorded ${hours} hours for ${args.user} from ${args.date} through ${end}.`
     : say`Time Doctor recorded ${hours} team hours from ${args.date} through ${end}.`;
   const coverage = usable.length < dates.length
     ? say` This includes ${usable.length} of ${dates.length} days with saved hours. The other days have no available totals.`
@@ -500,19 +560,22 @@ export const TOOL_SPECS = [
   { name: "draft_rent_reminder", description: "Builds a polite reminder draft for a tenant with an overdue balance. It is never sent.",
     parameters: { type: "object", properties: { query: { type: "string", description: "Tenant name, unit or property" } }, required: ["query"], additionalProperties: false } },
   { name: "list_deals", description: "Follow Up Boss (FUB) deals by filter. Use cancelled for cancellation leads, cancelled deals, or deals in a cancellation stage.",
-    parameters: { type: "object", properties: { filter: { type: "string", enum: ["open", "needs_review", "closing_soon", "past_due", "cancelled", "all"] }, query: { type: "string" } }, additionalProperties: false } },
+    parameters: { type: "object", properties: { filter: { type: "string", enum: ["open", "needs_review", "closing_soon", "past_due", "cancelled", "all"] }, query: { type: "string" },
+      stage: { type: "string" }, assignee: { type: "string" }, pipeline: { type: "string" } }, additionalProperties: false } },
   { name: "get_deal", description: "One deal with its stage, dates, flags and Harry's attorney email evidence.",
     parameters: { type: "object", properties: { query: { type: "string", description: "Property address or name" } }, required: ["query"], additionalProperties: false } },
-  { name: "list_tasks", description: "DoorLoop maintenance tasks by filter.",
-    parameters: { type: "object", properties: { filter: { type: "string", enum: ["overdue", "open", "claimed", "all"] }, property: { type: "string" } }, additionalProperties: false } },
-  { name: "get_team_hours", description: "Time Doctor tracked, active and idle hours. For an explicit day or period, always pass the resolved dates. Without a date, use the latest report. Supply a staff name when asked about one person.",
+  { name: "list_tasks", description: "DoorLoop maintenance tasks by status, property or priority. For the details of a named task, supply its subject or ID as query; omit filter to search all statuses.",
+    parameters: { type: "object", properties: { filter: { type: "string", enum: ["overdue", "open", "claimed", "all"] }, property: { type: "string" }, query: { type: "string" }, priority: { type: "string" } }, additionalProperties: false } },
+  { name: "get_team_hours", description: "Time Doctor tracked, active and idle totals, plus website and app usage (including DoorLoop). Use idle_by_app for sites or apps with idle time. Use app_usage for website and app time, setting app for a named app like DoorLoop. Never infer physical location or exact idle moments. For an explicit day or period, pass resolved dates. Supply a staff name for individual or app details.",
     parameters: { type: "object", properties: {
-      user: { type: "string", description: "Optional staff name from the question" },
+      user: { type: "string", description: "Staff name from the question or the active follow-up" },
+      metric: { type: "string", enum: ["tracked", "active", "idle", "idle_by_app", "app_usage"] },
+      app: { type: "string", description: "Exact requested website or app, e.g. DoorLoop; omit for an overall app breakdown" },
       date: { type: "string", description: "Requested work date or first day of the requested period in YYYY-MM-DD" },
       through: { type: "string", description: "Last inclusive work date in YYYY-MM-DD, for a period only" },
     }, additionalProperties: false } },
-  { name: "get_email_evidence", description: "Harry's Gmail attorney correspondence coverage, matched messages and verified replies in the latest report. Use get_deal for correspondence about a named property.",
-    parameters: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "get_email_evidence", description: "Harry's Gmail attorney correspondence, excerpts and verified replies in the latest saved report. Give a sender name, subject or keyword as query for message details. Use get_deal for correspondence about a named property.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false } },
   { name: "list_outside_payments", description: "Outside payment requests submitted in the app (Zelle, check, cash…).",
     parameters: { type: "object", properties: { status: { type: "string", enum: ["needs_action", "all"] } }, additionalProperties: false } },
   { name: "get_report_status", description: "Which data sources are in the latest report, when they were collected and any gaps.",
@@ -527,8 +590,10 @@ export function runTool(name: string, args: any, ctx: Ctx): ToolResult {
     case "list_deals": return listDeals(ctx, args ?? {});
     case "get_deal": return dealDetails(ctx, args ?? {});
     case "list_tasks": return listTasks(ctx, args ?? {});
-    case "get_team_hours": return args?.date ? historicalHours(ctx, args) : teamHours(ctx, args ?? {});
-    case "get_email_evidence": return emailEvidence(ctx);
+    case "get_team_hours":
+      if (args?.app || args?.metric === "app_usage" || args?.metric === "idle_by_app") return appActivity(ctx, args);
+      return args?.date ? historicalHours(ctx, args) : teamHours(ctx, args ?? {});
+    case "get_email_evidence": return emailEvidence(ctx, args ?? {});
     case "list_outside_payments": return outsidePayments(ctx, args ?? {});
     case "get_report_status": return reportStatus(ctx);
     default: return { data: { error: "unknown tool " + name }, blocks: [], sources: [], amounts: [], suggestions: [] };
